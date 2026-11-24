@@ -1,65 +1,71 @@
 #!/usr/bin/env python3
-"""pi-pool：在多个 pi 账号之间派发 pi 任务，账号由程序自己选、自己换。
+"""pi-pool: let Claude Code delegate work to other models through pi.
 
-按 ChatGPT/Codex 订阅额度（/wham/usage）和配置里的优先级选账号；一轮被额度拒绝或登录失效时，换下一个
-账号续跑同一个会话。所有账号共用一个会话目录，所以换账号后对话上下文不丢。
+Runs pi tasks across several subscription accounts. The account is chosen by
+configured priority and ChatGPT/Codex subscription quota (/wham/usage); when a run
+is refused for quota or an expired login, the next account continues the same
+session. All accounts share one session directory, so no context is lost.
 
-任务：
+Tasks:
   pi-pool run (--prompt TEXT | --task-file FILE) [--account auto|NAME]
               [--size large|small] [--session ID] [--cwd DIR] [--max-switch N]
-              [--refresh] [-- 其他 pi 参数，如 --tools read,grep --thinking high]
+              [--refresh] [-- extra pi args, e.g. --tools read,grep --thinking high]
   pi-pool steer SESSION (TEXT | --file FILE) [--now] [--wait S]
-                              给正在运行的会话插话；--now 先中止当前操作再发
+                              message a running session; --now aborts the current step first
   pi-pool followup SESSION (TEXT | --file FILE) [--wait S]
-                              等它把手上的事做完再发
-  pi-pool abort SESSION       中止正在运行的会话（在等后台任务时：关闭 pi，后台任务随之终止）
-  pi-pool show SESSION        再看一次会话最后的回答和用过的账号（ID 可写前缀）
-  pi-pool ls [N]              最近 N 个会话（默认 10）
+                              deliver after pi finishes what it is doing
+  pi-pool abort SESSION       stop a running session (while waiting for background
+                              jobs: shut pi down, which cancels them)
+  pi-pool show SESSION        last answer and accounts used (an ID prefix is enough)
+  pi-pool ls [N]              the N most recent sessions (default 10)
 
-账号：
-  pi-pool status [--json] [--refresh]      各账号额度、优先级、分级、在跑的会话数
-  pi-pool pick [--size large|small] [--session ID]   现在会按什么顺序选号
-  pi-pool account list                     配置里的账号
+Accounts:
+  pi-pool status [--json] [--refresh]      quota, priority, tier, running sessions per account
+  pi-pool pick [--size large|small] [--session ID]   the order accounts would be tried in
+  pi-pool account list                     accounts in the configuration
   pi-pool account add NAME [--dir DIR] [--priority N] [--no-login]
-                              建 ~/.pi/agent-NAME（设置、扩展软链到 base_dir），
-                              device code 登录，写进配置
-  pi-pool account login NAME               重新登录（登录失效后）
+                              create ~/.pi/agent-NAME (settings and extensions linked
+                              from base_dir), log in by device code, save to the config
+  pi-pool account login NAME               log in again (after the login expired)
   pi-pool account set NAME [--priority N] [--enable|--disable] [--dir DIR]
-  pi-pool account remove NAME              只从配置移除，目录和凭证保留
-  pi-pool account sync [NAME...]           base_dir 里新增的设置/扩展补软链
-  pi-pool account check [NAME...]          pi auth check（不刷新凭证）
-  pi-pool config [--write]                 打印生效的配置；--write 写成配置文件
-  pi-pool doctor                           检查 pi、额度查询、账号登录、skill 安装
+  pi-pool account remove NAME              remove from the config; directory and credentials stay
+  pi-pool account sync [NAME...]           link entries added to base_dir, drop dangling links
+  pi-pool account check [NAME...]          pi auth check (credentials are not refreshed)
+  pi-pool config [--write]                 print the effective config; --write saves it
+  pi-pool doctor                           check pi, account logins, and the skill install
 
-pi 以 `pi --mode rpc` 常驻运行。steer/followup/abort 把消息写进
-~/.pi/pool/inbox/<会话>/，正在运行的 pi-pool 每 0.5 秒取一次并转给 pi：
-  steer     当前这一步的工具调用执行完后、下一次调用模型前送达（不打断正在跑的命令）
-  --now     先中止当前操作（包括正在跑的命令），再把消息作为新指令发出
-  followup  等 pi 把手上的事做完再送达
-运行刚结束时到达的消息会作为新一轮指令发出，不会丢。
+pi runs as `pi --mode rpc`. steer/followup/abort write the message to
+~/.pi/pool/inbox/<session>/; the running pi-pool picks it up every 0.5 s and forwards it:
+  steer     after the current tool call, before the next model call (a running command
+            is not interrupted)
+  --now     abort the current step (including a running command), then send as a new prompt
+  followup  after pi finishes what it is doing
+A message that arrives just as a run ends is sent as a new prompt, not lost.
 
-pi 停下时如果 pi-async-bash 报告还有后台 bash 任务（RPC 状态 async-bash），pi-pool
-不退出，等任务完成、结果送进对话、agent 被唤醒接着做完。等待期间照常收 steer/followup，
-abort 会关闭 pi 并终止后台任务。没有总时长上限。
+If pi stops while pi-async-bash still reports background bash jobs (RPC status
+async-bash), pi-pool does not exit: it waits until the jobs finish, their results reach
+the conversation, and the woken agent is done. steer/followup still work while waiting;
+abort shuts pi down and cancels the jobs. There is no overall time limit.
 
-选号顺序：priority 小的先用（默认 50，旧配置 last_resort 换算成 90）；同优先级里
-会话上次用的账号优先（复用提示缓存），再按分级、在跑会话数、剩余额度。
-分级规则（阈值默认 5%，可在配置里改 low_pct）：
-  ok       主额度各窗口剩余都 >= 阈值，可接大任务
-  low      任一窗口剩余 < 阈值但服务端仍允许请求，只接小任务
-  blocked  服务端 allowed=false，本机刚被额度拒绝在冷却，或登录失效
-  unknown  额度没查到；排在最后，作为兜底
+Account order: lower priority first (default 50; legacy last_resort maps to 90); within
+a priority, the session's last account first (prompt cache), then tier, running
+sessions, and remaining quota. Tiers (threshold low_pct, default 5%):
+  ok       every window has at least the threshold left; takes large tasks
+  low      some window is below the threshold but requests are allowed; small tasks only
+  blocked  the server refuses requests, a local cooldown is active, or the login expired
+  unknown  quota could not be read; last-resort fallback
 
-配置：~/.config/pi-pool/config.json（环境变量 PI_POOL_CONFIG 可改路径），例如
+Config: ~/.config/pi-pool/config.json (or $PI_POOL_CONFIG), for example
   {"base_dir": "~/.pi/agent", "provider": "openai-codex", "low_pct": 5,
    "accounts": {"work": {"dir": "~/.pi/agent-work", "priority": 50},
                 "main": {"dir": "~/.pi/agent", "priority": 90, "enabled": true}}}
-没有配置文件时，~/.pi/agent 存在就把它当作唯一账号 main。
-运行数据：~/.pi/pool/（PI_POOL_DIR 可改；sessions/ 会话，logs/ 每次运行的 JSONL 事件流，
-inbox/ 待转发的插话，quota.json 额度缓存，state.json 会话、冷却与登录失效记录）。
+Without a config file, ~/.pi/agent (if present) is the only account, "main".
+Runtime data: ~/.pi/pool/ (or $PI_POOL_DIR): sessions/, logs/ (raw JSONL per run),
+inbox/ (pending messages), quota.json (quota cache), state.json (sessions, cooldowns,
+expired logins).
 
-退出码：0 成功；1 pi 失败（steer 等：没送达；doctor：有 FAIL）；2 参数错误；
-75 没有可用账号（都被额度拒绝或登录失效）。
+Exit codes: 0 success; 1 pi failed (steer etc.: not delivered; doctor: FAIL items);
+2 bad arguments; 75 no usable account (all refused for quota or expired logins).
 """
 
 from __future__ import annotations

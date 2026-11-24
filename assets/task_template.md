@@ -1,30 +1,30 @@
-# 任务：<一句话目标>
+# Task: <one-sentence goal>
 
-## 背景
-<pi 看不到对话。只写完成任务必需的上下文：项目是什么、这件事为什么做、相关约定。
-仓库规则写明出处（如「AGENTS.md §4」），pi 会自动读到 cwd 及上级目录的 AGENTS.md，不必整段复制。>
+## Background
+<pi cannot see the conversation. Give only the context needed for the task: what the project is, why this work matters, relevant conventions.
+Cite repository rules by location (for example "AGENTS.md §4"). pi reads the AGENTS.md files in the cwd and its parent directories automatically, so do not copy them.>
 
-## 输入
-- `<路径>`：<是什么；只读还是可改>
+## Inputs
+- `<path>`: <what it is; read-only or editable>
 
-## 要求
-1. <具体规格：函数签名、参数、输出格式、边界情况、要沿用的现有写法>
-2. <……>
+## Requirements
+1. <Exact spec: function signatures, arguments, output format, edge cases, existing patterns to follow>
+2. <…>
 
-## 交付
-- <文件路径与格式>
+## Deliverables
+- <file paths and formats>
 
-## 禁止
-- 不提交 git、不 push、不提交或取消集群作业、不删除或覆盖已有产物。
-- <本任务特有的禁区：不能改的文件、不能加载的大文件、不能跑超过多久的计算>
+## Do not
+- Do not commit or push to git, submit or cancel cluster jobs, or delete or overwrite existing outputs.
+- <Task-specific limits: files that must not change, large files not to load, computations longer than a given time>
 
-## 验收（先自己跑一遍，调度者会复跑）
+## Acceptance (run these yourself first; the dispatcher will rerun them)
 ```bash
-<命令，以及期望输出或判据>
+<commands, with the expected output or pass criteria>
 ```
 
-## 最终回答格式
-1. 做了什么（改了哪些文件，每个一句话）
-2. 验收命令和真实输出（原样贴，不要概括）
-3. 没做完或偏离任务单的地方
-4. 不确定、需要调度者判断的点
+## Final answer format
+1. What you did (each changed file, one sentence each)
+2. The acceptance commands and their real output (paste verbatim, do not summarize)
+3. Anything unfinished or different from this brief
+4. Open questions the dispatcher needs to decide

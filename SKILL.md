@@ -1,89 +1,89 @@
 ---
 name: pi-pool
-description: 让 Claude Code 指挥其他模型干活：把执行类工作通过 pi 派给另一个模型（例如走 ChatGPT/Codex 订阅的 GPT）当 subagent。账号由 pi-pool 按优先级和额度自动选，额度用尽或登录失效时自动换号、在同一会话里续跑，不需要手动管理。用户要求让 GPT/pi/codex/其他模型干活、派给 pi、用 pi 当子代理、查 pi 账号额度、添加或调整 pi 账号时读。触发词：pi-pool、pi 子代理、派给 pi、让 GPT 做、让 codex 做、gpt worker、pi 账号、加账号、换账号、额度轮换、delegate to pi。
+description: Let Claude Code delegate work to other models. Hands execution work through pi to another model (for example GPT on a ChatGPT/Codex subscription) as a subagent. pi-pool chooses accounts by priority and quota, and on quota exhaustion or an expired login it switches accounts and continues the same session — no manual account management. Read when the user asks to have GPT/pi/codex/another model do work, delegate to pi, use pi as a subagent, check pi account quota, or add or adjust pi accounts. Triggers: pi-pool, pi subagent, delegate to pi, let GPT do it, codex worker, gpt worker, pi account, add account, switch account, quota rotation, 派给 pi, 让 GPT 做, 让 codex 做, pi 子代理, pi 账号, 加账号, 换账号, 额度轮换.
 ---
 
-# pi-pool：让 Claude Code 指挥其他模型干活
+# pi-pool: let Claude Code delegate work to other models
 
-分工：Claude 定计划、写任务单、验收、汇报；pi 上的模型执行；选账号、换账号、等后台任务由 `pi-pool` 程序负责。命令是 `pi-pool`，源码和本 skill 在同一个目录（`pi-pool --help` 有完整用法）。
+Roles: Claude plans, writes the task brief, reviews the result, and reports. The model in pi executes. The `pi-pool` program chooses and switches accounts and waits for background jobs. The command is `pi-pool`. Its source lives in the same directory as this skill; run `pi-pool --help` for full usage.
 
-**先读本机规则**：如果 `~/.config/pi-pool/notes.md` 存在（配置放在别处时，是 `$PI_POOL_CONFIG` 同目录的 `notes.md`），先读它。那是这台机器的用户补充规则，与本文件冲突时以它为准。
+## 1. When to delegate
 
-## 1. 什么时候派
+- Delegate only when the user explicitly asks for another model to do the work, or has said in this session that execution work goes to pi by default. Otherwise do the work yourself.
+- Good to delegate: searching many files or logs, writing code and tests to a clear spec, bulk mechanical edits, independent reviews.
+- Keep for yourself: defining scope and conventions, interpreting results, reporting to the user, changes of a few lines, and anything irreversible (submitting or cancelling cluster jobs, deleting or overwriting outputs, git push).
+- Never delegate work that needs aesthetic judgment (page styling, visual design, layout, color). Claude does that.
 
-- 用户明确要求让其他模型做，或本会话里说过「执行类工作默认交给 pi」时才派；否则照常自己做。
-- 适合派：在大量文件或日志里查找、按清楚的规格写代码和测试、批量机械改动、独立的审查。
-- 自己做：定口径和协议、解读结果、向用户汇报、几行就能改完的小事、不可逆操作（提交或取消集群作业、删除或覆盖产物、git push）。
-
-## 2. 派活
+## 2. Dispatching
 
 ```bash
-pi-pool run --task-file <任务单> --cwd <仓库根>            # 默认 --size large
-pi-pool run --prompt "短问题" --size small -- --tools read,grep,find,ls   # 只读小查询
-pi-pool run --session <ID前缀> --prompt "验收命令 X 失败，输出如下：……请修复"
+pi-pool run --task-file <brief> --cwd <repo root>            # default --size large
+pi-pool run --prompt "short question" --size small -- --tools read,grep,find,ls   # read-only quick query
+pi-pool run --session <ID prefix> --prompt "Acceptance command X failed, output: … please fix"
 ```
 
-- 账号不用管：不加 `--account`，pi-pool 会按优先级、额度、在跑会话数自己选，被拒绝就换号在同一会话里续跑。只有用户点名某个账号时才加 `--account NAME`。
-- `--size`：一个问题、看一个文件、几轮就能答完 → `small`（优先用快用完额度的账号）；其余默认 `large`。拿不准不加。
-- 任务单写到本会话 scratchpad，模板见本目录的 `assets/task_template.md`。pi 看不到对话，背景要写全。
-- `--cwd` 决定 pi 读到哪些 AGENTS.md。项目规则写出处即可，不必复制。续接会话时自动回到第一次的目录。
-- pi 默认加载用户的扩展和 skill。只读任务加 `-- --tools read,grep,find,ls`；换模型用 `-- --model <provider/model> --thinking <level>`。
-- 预计超过约 5 分钟的任务，用 Bash 的 `run_in_background` 启动，跑完会收到通知，不要轮询。
-- 多个互不依赖的任务可以同时派（各自是独立会话，pi-pool 会把它们分散到不同账号）。不要让两个 pi 同时改同一批文件。
-- 先读/查、再动手：审查、调研、诊断之后接着做修复或实现时，优先用 `run --session <原会话>` 续接，不要新开会话重读同一批文件。任务单开头写明上一轮的只读等限制是否还适用。
+- Leave accounts alone: without `--account`, pi-pool picks by priority, quota, and running sessions, and on refusal switches accounts and continues the same session. Add `--account NAME` only when the user names an account.
+- `--size`: use `small` for one question, one file, or a few turns (it prefers accounts that are nearly out of quota); otherwise leave the default, `large`. If unsure, omit it.
+- Write the brief to this session's scratchpad. The template is `assets/task_template.md` in this directory. pi cannot see this conversation, so give it the full background.
+- `--cwd` decides which AGENTS.md files pi reads. Cite project rules by location rather than copying them. A resumed session automatically returns to its first directory.
+- pi loads the user's extensions and skills by default. For read-only tasks add `-- --tools read,grep,find,ls`.
+- Model choice: for writing code, searching, and analysis, use the account's default model and add no flags. For planning decisions and reasoning on complex tasks, add `-- --model openai-codex/gpt-6.2-astra --thinking high`; do not use it for ordinary implementation.
+- Start tasks expected to take more than about 5 minutes with Bash `run_in_background`. You will be notified when they finish; do not poll.
+- Independent tasks can run at the same time. Each one is its own session, and pi-pool spreads them across accounts. Never let two pi runs edit the same files.
+- Read first, then act: when a fix or implementation follows a review, investigation, or diagnosis, continue the original session with `run --session <original>` rather than starting a new one that rereads the same files. Say at the top of the brief whether the earlier restrictions (for example read-only) still apply.
 
-## 3. 运行中
+## 3. While it runs
 
-- 不看中间过程。正常运行时后台输出里每轮只有一行进度；出现下面这些行才需要看一眼：
-  - `N 没有新事件；工具 X 已运行 …`：可能卡住了；
-  - `注意：连续 N 次工具调用出错`；
-  - `后台任务：…` / `pi 已停下，等待后台任务完成后继续`：pi 在等自己放到后台的命令（例如等集群作业），pi-pool 不会退出，也没有总时长上限，这是正常状态。
-- 改方向、补信息用 `steer`/`followup`，不要 kill 进程：
+- Do not watch the run. Normally the background output gets one progress line per turn. Look only when one of these lines appears:
+  - `… 没有新事件；工具 X 已运行 …`: nothing has happened for a while and the run may be stuck.
+  - `注意：连续 N 次工具调用出错`: N tool calls in a row have failed.
+  - `后台任务：…` or `pi 已停下，等待后台任务完成后继续`: pi is waiting for a command it moved to the background (for example a cluster job). This is normal. pi-pool will not exit, and there is no overall time limit.
+- To change direction or add information, use `steer`/`followup`; do not kill the process:
   ```bash
-  pi-pool steer <ID前缀> "改做 X……"          # 当前工具调用跑完后送达
-  pi-pool steer <ID前缀> --now "停下，改做 X"  # 先中止当前操作再发
-  pi-pool followup <ID前缀> "做完后再做 Y"
-  pi-pool abort <ID前缀>                      # 中止；在等后台任务时会连后台任务一起终止
+  pi-pool steer <ID prefix> "Do X instead…"          # delivered after the current tool call
+  pi-pool steer <ID prefix> --now "Stop, do X"       # aborts the current operation first
+  pi-pool followup <ID prefix> "Afterwards, do Y"
+  pi-pool abort <ID prefix>                          # stops the run; while waiting, also kills background jobs
   ```
-  消息长就写文件，用 `--file`。返回「已送达」才算发出去；返回 1 说明运行已结束，改用 `run --session`。
-- `pi-pool ls` 看最近会话（`运行中(账号)`）；`pi-pool show <ID>` 看已有的回答和每轮用的账号。
+  For long messages, write them to a file and pass `--file`. A message counts as sent only when the command reports `已送达` (delivered). Exit code 1 means the run has ended; use `run --session` instead.
+- `pi-pool ls` lists recent sessions; running ones show as `运行中(account)`. `pi-pool show <ID>` shows the answer so far and the account used for each run.
 
-## 4. 结果
+## 4. Results
 
-stdout 摘要只读这些：账号路径（如 `acct1(额度) → acct2`）、exit、stop、轮数、用时、工具调用计数、等后台任务的时长、日志路径，然后是 `---` 和最终回答。原始事件流在摘要给出的日志路径里，排查时才看。
+From the stdout summary, read only: the account path (for example `acct1(额度) → acct2`, where `额度` marks a quota refusal), exit, stop, turns, time, tool-call counts, time spent waiting for background jobs, the log path, and then the final answer after `---`. The raw event stream is at the log path; open it only for debugging.
 
-退出码：0 成功；1 pi 出错（看摘要里的错误）；2 参数错误；75 没有可用账号。
+Exit codes: 0 success; 1 pi failed (see the error in the summary); 2 bad arguments; 75 no usable account.
 
-- 退出码 75：把 `pi-pool status` 的结果告诉用户，不要自己悄悄接手大任务。
-- 摘要或 stderr 出现「登录失效，需要 pi-pool account login NAME」：程序已经换号继续了；告诉用户在终端运行 `! pi-pool account login NAME` 重新登录（device code，需要用户本人操作）。
+- Exit code 75: tell the user what `pi-pool status` shows. Do not quietly take over a large task yourself.
+- If the summary or stderr says `登录失效，需要 pi-pool account login NAME` (login expired), pi-pool has already switched accounts and continued. Ask the user to run `! pi-pool account login NAME` in their terminal; device-code login needs the user.
 
-## 5. 验收
+## 5. Review
 
-pi 的最终回答只是线索。
+pi's final answer is only a lead.
 
-- 自己复跑验收命令，看真实输出。
-- `git diff` 逐块看改动，超出任务范围就退回。改过的代码照常跑项目的 lint 和类型检查。
-- 它报的数字和清单用命令复核。
-- 不通过就 `--session` 追问，把失败命令和输出原样发回。两三轮还不过就自己接手。
-- 向用户汇报时说明哪些部分由 pi 做、用了哪个账号、自己复核了什么。
+- Rerun the acceptance commands yourself and read the real output.
+- Go through `git diff` hunk by hunk and send back anything outside the task. Run the project's lint and type checks on changed code as usual.
+- Check every number and list it reports with a command.
+- If it does not pass, follow up with `--session` and paste the failing command and its output verbatim. If two or three rounds do not fix it, take over.
+- When reporting to the user, say which parts pi did, which account it used, and what you verified yourself.
 
-## 6. 账号（用户要求时才动）
+## 6. Accounts (only when the user asks)
 
 ```bash
-pi-pool status                         # 各账号优先级、5h/7d 剩余、分级、在跑会话数
-pi-pool account list                   # 配置里的账号
-pi-pool account add NAME [--priority N]   # 建目录、软链共享设置、device code 登录、写配置
+pi-pool status                            # priority, 5h/7d remaining, tier, running sessions per account
+pi-pool account list                      # accounts in the configuration
+pi-pool account add NAME [--priority N]   # create the directory, link shared settings, log in by device code, save
 pi-pool account set NAME --priority N | --enable | --disable
-pi-pool account login NAME             # 登录失效后重新登录
-pi-pool doctor                         # 这台机器能不能跑：pi、各账号登录、skill 安装
+pi-pool account login NAME                # log in again after the login expired
+pi-pool doctor                            # can this machine run it: pi, account logins, skill install
 ```
 
-- 优先级数字小的先用。
-- `account add` 和 `account login` 要用户在浏览器里完成登录：给出命令，让用户用 `! ` 前缀自己运行，不要自己跑。
-- 新机器部署：克隆仓库后运行 `install.sh`，再按 README「部署到新机器」一节逐个 `account add`。
+- Lower priority numbers are used first.
+- `account add` and `account login` need the user to finish the login in a browser. Give the user the command to run with the `! ` prefix; do not run it yourself.
+- New machine: clone the repository, run `install.sh`, then follow "Set up a new machine" in the README to add each account.
 
-## 7. 限制
+## 7. Limits
 
-- **没有沙箱**：pi 以用户权限运行，bash 能做任何事。任务单的「禁止」一节要写明不能改的文件和不能跑的命令（提交/取消作业、删除产物、git push）。需要隔离时用 git worktree 给它一份副本。
-- pi 的 bash 命令跑在当前机器上，和会话共用 CPU 与内存；重计算不要放进任务里。
-- 换账号后，第一轮要在新账号上重新计算整段上下文，消耗更多额度；pi-pool 已优先沿用上次的账号。
+- **No sandbox.** pi runs with the user's permissions, and its bash can do anything. The "Do not" section of the brief must list files that must not change and commands that must not run (submitting or cancelling jobs, deleting outputs, git push). Use a git worktree when isolation is needed.
+- pi's bash runs on the current machine and shares CPU and memory with this session. Keep heavy computation out of delegated tasks.
+- After an account switch, the first turn on the new account recomputes the whole context and costs more quota. pi-pool therefore keeps the previous account whenever it can.

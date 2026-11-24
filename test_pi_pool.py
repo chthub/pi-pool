@@ -1,5 +1,5 @@
-"""pi-pool 的离线测试：额度数据是手写的，pi 用 fake_pi.py 代替，不发线上请求。"""
-# 夹具在 setUp 里建立，这是 unittest 的惯例
+"""Offline tests for pi-pool: quota data is written by hand and pi is replaced by fake_pi.py; no network requests."""
+# fixtures are created in setUp, as is usual for unittest
 # pyright: reportUninitializedInstanceVariable=false
 
 import contextlib
@@ -38,7 +38,7 @@ class PoolCase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         root = self.tmp.name
-        # 旧格式（目录字符串 + last_resort）经 normalize_config 换算：main 优先级 90，其余 50
+        # legacy format (directory strings + last_resort) via normalize_config: main gets priority 90, the rest 50
         self.cfg = pi_pool.normalize_config(
             {"accounts": {n: os.path.join(root, f"agent-{n}") for n in QUOTA},
              "low_pct": 5, "quota_ttl_s": 120, "last_resort": ["main"],
@@ -65,7 +65,7 @@ class PoolCase(unittest.TestCase):
             "PI_POOL_PI": FAKE_PI, "FAKE_PI_CALLS": self.calls, "FAKE_PI_FAIL": "",
             "FAKE_PI_DELAY": "0", "FAKE_PI_DIALOG": ""})
         self.env.start()
-        # 测试本身可能跑在某个客户端的 shell 里；patch.dict 在 tearDown 时恢复
+        # the tests themselves may run inside some client's shell; patch.dict restores the environment in tearDown
         for var in (*pi_pool.CALLER_VARS.values(), "PI_SESSION_FILE"):
             os.environ.pop(var, None)
         os.chmod(FAKE_PI, 0o755)
@@ -90,7 +90,7 @@ class PoolCase(unittest.TestCase):
             return [json.loads(line) for line in f]
 
     def starts(self):
-        """每次启动假 pi 的记录：账号、argv、cwd。"""
+        """Every start of the fake pi: account, argv, cwd."""
         return [c for c in self.call_log() if "argv" in c]
 
     def commands(self, kind=None):
@@ -119,7 +119,7 @@ class PoolCase(unittest.TestCase):
                 if rec.get("running"):
                     return sid
             time.sleep(0.05)
-        self.fail("运行没有登记 running")
+        self.fail("run was not recorded as running")
 
 
 class ClassifyTest(PoolCase):
@@ -151,7 +151,7 @@ class ClassifyTest(PoolCase):
         quota = dict(self.quota, accounts=dict(QUOTA, alpha=rec([("5h", 90), ("7d", 30)])))
         ranked = pi_pool.rank(self.cfg, quota, self.state(), "large", set(), "alpha")
         self.assertEqual([r[0] for r in ranked], ["alpha", "gamma", "main"])
-        # 上次的账号分级不合适时不强留
+        # the previous account is not kept when its tier no longer fits
         ranked = pi_pool.rank(self.cfg, self.quota, self.state(), "large", set(), "alpha")
         self.assertEqual(ranked[0][0], "gamma")
 
@@ -167,7 +167,7 @@ class ClassifyTest(PoolCase):
             "alpha": {"dir": "/c"}, "beta": {"dir": "/d", "enabled": False}}})
         quota = dict(self.quota, accounts=dict(QUOTA, alpha=rec([("5h", 99), ("7d", 99)])))
         ranked = pi_pool.rank(cfg, quota, self.state(), "large", set(), None)
-        self.assertEqual([r[0] for r in ranked], ["main", "gamma", "alpha"], "停用的 beta 不参与")
+        self.assertEqual([r[0] for r in ranked], ["main", "gamma", "alpha"], "disabled beta is excluded")
 
     def test_parallel_runs_spread_within_same_priority(self):
         quota = dict(self.quota, accounts=dict(QUOTA, alpha=rec([("5h", 99), ("7d", 99)])))
@@ -175,7 +175,7 @@ class ClassifyTest(PoolCase):
             st["sessions"]["s1"] = {"running": {"pid": os.getpid(), "host": pi_pool.socket.gethostname(),
                                                 "account": "alpha"}}
         ranked = pi_pool.rank(self.cfg, quota, self.state(), "large", set(), None)
-        self.assertEqual([r[0] for r in ranked][:2], ["gamma", "alpha"], "alpha 额度更多但已有会话在跑")
+        self.assertEqual([r[0] for r in ranked][:2], ["gamma", "alpha"], "alpha has more quota but already runs a session")
 
     def test_auth_bad_account_is_blocked(self):
         with pi_pool.locked_state() as st:
@@ -186,7 +186,7 @@ class ClassifyTest(PoolCase):
 
 
 class QuotaParseTest(unittest.TestCase):
-    """内置的 /wham/usage 解析；不发请求。"""
+    """Built-in /wham/usage parsing; no requests."""
 
     def test_windows_and_remaining(self):
         rec = pi_pool.parse_usage({"rate_limit": {"allowed": True, "primary_window": {
@@ -204,9 +204,9 @@ class QuotaParseTest(unittest.TestCase):
                                                   "primary_window": {"limit_window_seconds": 0},
                                                   "secondary_window": {"limit_window_seconds": 604800,
                                                                        "used_percent": "x"}}})
-        self.assertFalse(rec["allowed"], "limit_reached 视为不允许")
-        self.assertEqual([x["window"] for x in rec["buckets"][0]["windows"]], ["7d"], "0 秒窗口是关掉的")
-        self.assertEqual(rec["buckets"][0]["windows"][0]["remaining_pct"], 100.0, "非数字按 0% 已用")
+        self.assertFalse(rec["allowed"], "limit_reached counts as not allowed")
+        self.assertEqual([x["window"] for x in rec["buckets"][0]["windows"]], ["7d"], "a 0-second window is turned off")
+        self.assertEqual(rec["buckets"][0]["windows"][0]["remaining_pct"], 100.0, "non-numeric means 0% used")
         for bad in (None, [], "<html>", {"rate_limit": "x"}, {}):
             rec = pi_pool.parse_usage(bad)
             self.assertFalse(rec["ok"])
@@ -215,16 +215,16 @@ class QuotaParseTest(unittest.TestCase):
     def test_credentials(self):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "auth.json")
-            self.assertIn("没有 auth.json", pi_pool.read_codex_cred(path)[1])
-            for content, expect in (("{bad", "格式损坏"), ("[]", "不是 JSON 对象"),
-                                    ('{"openai": {"type": "api_key", "key": "k"}}', "没有 openai-codex"),
-                                    ('{"openai-codex": {"type": "oauth"}}', "没有 access token")):
+            self.assertIn("no auth.json", pi_pool.read_codex_cred(path)[1])
+            for content, expect in (("{bad", "malformed"), ("[]", "not a JSON object"),
+                                    ('{"openai": {"type": "api_key", "key": "k"}}', "no openai-codex"),
+                                    ('{"openai-codex": {"type": "oauth"}}', "no access token")):
                 with open(path, "w", encoding="utf-8") as f:
                     f.write(content)
                 cred, err = pi_pool.read_codex_cred(path)
                 self.assertIsNone(cred)
                 self.assertIn(expect, err)
-                self.assertNotIn('"k"', err, "错误信息不带凭据内容")
+                self.assertNotIn('"k"', err, "error messages never carry credential contents")
             with open(path, "w", encoding="utf-8") as f:
                 f.write('{"openai": {"type": "oauth", "access": "a.b.c"}}')
             self.assertEqual(pi_pool.read_codex_cred(path)[0], {"type": "oauth", "access": "a.b.c"})
@@ -262,7 +262,7 @@ class FailureDetectionTest(unittest.TestCase):
         self.assertIsNotNone(pi_pool.quota_failure(res))
 
     def test_real_codex_limit_message(self):
-        # 一个 plus 账号 7d 用尽时 pi 实际给出的 errorMessage
+        # the errorMessage pi actually gave when a plus account ran out of its 7d quota
         res = pi_pool.RunResult()
         res.stop_reason, res.error = "error", "Codex error: The usage limit has been reached"
         self.assertIsNotNone(pi_pool.quota_failure(res))
@@ -287,7 +287,7 @@ class RunTest(PoolCase):
         code, out, _ = self.run_pool("--prompt", "hi", "--", "--tools", "read")
         self.assertEqual(code, 0)
         self.assertIn("done by agent-gamma (last: hi)", out)
-        self.assertIn("工具 read×1", out)
+        self.assertIn("tools read×1", out)
         argv = self.starts()[0]["argv"]
         self.assertEqual(argv, ["--mode", "rpc", "--session-dir", pi_pool.SESSION_DIR,
                                 "--session-id", argv[5], "--tools", "read"])
@@ -319,8 +319,8 @@ class RunTest(PoolCase):
         self.assertEqual(starts[1]["argv"][5], sid)
         prompts = self.commands("prompt")
         self.assertEqual(prompts[0]["message"], "hi")
-        self.assertIn("上一轮在账号 gamma 上因额度限制中断", prompts[1]["message"])
-        self.assertIn("gamma(额度) → main", out)
+        self.assertIn("previous turn on account gamma was interrupted by a quota limit", prompts[1]["message"])
+        self.assertIn("gamma(quota) → main", out)
         st = self.state()
         self.assertGreater(st["cooldown"]["gamma"]["until"], time.time() + 25 * 60)
         self.assertEqual(st["sessions"][sid]["last_account"], "main")
@@ -329,7 +329,7 @@ class RunTest(PoolCase):
         os.environ["FAKE_PI_FAIL"] = "agent-gamma,agent-main"
         code, _, err = self.run_pool("--prompt", "hi")
         self.assertEqual(code, 75)
-        self.assertIn("没有能接 large 任务的账号", err)
+        self.assertIn("no account left that can take a large task", err)
 
     def test_small_task_can_use_low_account(self):
         code, out, _ = self.run_pool("--prompt", "hi", "--size", "small")
@@ -366,7 +366,7 @@ class SessionResolveTest(PoolCase):
         self.assertFalse(os.path.exists(self.calls))
 
     def test_unregistered_session_found_from_file(self):
-        # 运行被 kill、没登记进 state.json 的会话：从会话文件头找回 ID 和 cwd
+        # a session killed before it reached state.json: recover its ID and cwd from the session file header
         sid = "abcdef12-3456-4789-8abc-def012345678"
         os.makedirs(pi_pool.SESSION_DIR)
         with open(os.path.join(pi_pool.SESSION_DIR, f"2026-01-01T00-00-00-000Z_{sid}.jsonl"),
@@ -385,14 +385,14 @@ class SteerTest(PoolCase):
         os.environ["FAKE_PI_DELAY"] = "1"
         t, box = self.run_in_thread("--prompt", "hi")
         sid = self.wait_running()
-        code, err = self.send("steer", sid[:8], "改成做", "B")
+        code, err = self.send("steer", sid[:8], "switch to", "B")
         t.join(20)
         self.assertEqual(code, 0, err)
         rc, out, _ = box["result"]
         self.assertEqual(rc, 0)
-        self.assertIn("(last: 改成做 B)", out)
-        self.assertIn("运行中插话 steer×1", out)
-        self.assertEqual([c["message"] for c in self.commands("steer")], ["改成做 B"])
+        self.assertIn("(last: switch to B)", out)
+        self.assertIn("injected steer×1", out)
+        self.assertEqual([c["message"] for c in self.commands("steer")], ["switch to B"])
         self.assertNotIn("running", self.state()["sessions"][sid])
         self.assertEqual(pi_pool.pending_inbox(sid), [])
 
@@ -400,10 +400,10 @@ class SteerTest(PoolCase):
         os.environ["FAKE_PI_DELAY"] = "1"
         t, box = self.run_in_thread("--prompt", "hi")
         sid = self.wait_running()
-        code, err = self.send("follow_up", sid, "--file", self.write_file("顺便做 C"))
+        code, err = self.send("follow_up", sid, "--file", self.write_file("also do C"))
         t.join(20)
         self.assertEqual(code, 0, err)
-        self.assertIn("(last: 顺便做 C)", box["result"][1])
+        self.assertIn("(last: also do C)", box["result"][1])
         self.assertEqual(len(self.commands("follow_up")), 1)
 
     def test_now_aborts_long_tool_then_sends(self):
@@ -411,13 +411,13 @@ class SteerTest(PoolCase):
         started = time.time()
         t, box = self.run_in_thread("--prompt", "hi")
         sid = self.wait_running()
-        code, err = self.send("steer", sid, "--now", "停下改做 D")
+        code, err = self.send("steer", sid, "--now", "stop and do D")
         self.assertEqual(code, 0, err)
-        # 中止后作为新一轮指令发出；新一轮的工具调用又要 30s，确认发出后再 abort 结束测试
+        # sent as a new prompt after the abort; its tool call takes 30 s again, so abort once it has been sent
         deadline = time.time() + 10
         while len(self.commands("prompt")) < 2 and time.time() < deadline:
             time.sleep(0.05)
-        self.assertEqual([c["message"] for c in self.commands("prompt")], ["hi", "停下改做 D"])
+        self.assertEqual([c["message"] for c in self.commands("prompt")], ["hi", "stop and do D"])
         self.assertEqual(self.send("abort", sid)[0], 0)
         t.join(20)
         self.assertFalse(t.is_alive())
@@ -437,7 +437,7 @@ class SteerTest(PoolCase):
         self.assertIn("stop=aborted", out)
 
     def test_message_arriving_at_settle_becomes_new_run(self):
-        # 收件箱里已有消息、运行又在第一次轮询前就结束：作为新一轮 prompt 发出
+        # a message is already in the inbox and the run ends before the first poll: it is sent as a new prompt
         sid = "11111111-2222-3333-4444-555555555555"
         os.makedirs(pi_pool.SESSION_DIR)
         with open(os.path.join(pi_pool.SESSION_DIR, f"x_{sid}.jsonl"), "w",
@@ -461,7 +461,7 @@ class SteerTest(PoolCase):
         sid = self.starts()[0]["argv"][5]
         code, err = self.send("steer", sid, "x")
         self.assertEqual(code, 1)
-        self.assertIn("没有在运行", err)
+        self.assertIn("is not running", err)
         self.assertEqual(pi_pool.pending_inbox(sid), [])
 
     def write_file(self, text):
@@ -476,13 +476,13 @@ class FailureSwitchTest(PoolCase):
         os.environ["FAKE_PI_AUTH_FAIL"] = "agent-gamma"
         code, out, err = self.run_pool("--prompt", "hi")
         self.assertEqual(code, 0, err)
-        self.assertIn("gamma(登录失效) → main", out)
+        self.assertIn("gamma(login) → main", out)
         self.assertIn("pi-pool account login gamma", err)
         self.assertIn("gamma", self.state()["auth_bad"])
         prompts = self.commands("prompt")
         self.assertEqual(prompts[1]["account"], "agent-main")
-        self.assertIn("登录失效", prompts[1]["message"])
-        # 下一次直接跳过 gamma
+        self.assertIn("an expired login", prompts[1]["message"])
+        # the next run skips gamma right away
         self.run_pool("--prompt", "again")
         self.assertEqual(self.commands("prompt")[-1]["account"], "agent-main")
 
@@ -492,13 +492,13 @@ class FailureSwitchTest(PoolCase):
         with contextlib.redirect_stderr(err):
             for _ in range(pi_pool.TOOL_ERROR_WARN):
                 pi_pool.absorb(res, {"type": "tool_execution_end", "toolName": "bash", "isError": True}, True)
-        self.assertIn(f"连续 {pi_pool.TOOL_ERROR_WARN} 次工具调用出错", err.getvalue())
+        self.assertIn(f"{pi_pool.TOOL_ERROR_WARN} tool calls failed in a row", err.getvalue())
         pi_pool.absorb(res, {"type": "tool_execution_end", "toolName": "bash", "isError": False}, True)
         self.assertEqual(res.tool_error_streak, 0)
 
 
 class BackgroundTest(PoolCase):
-    """pi-async-bash 报告后台任务时，pi 停下也不退出，等结果送达。"""
+    """When pi-async-bash reports background jobs, pi stopping does not end the run; it waits for the results."""
 
     def bg_log(self):
         return [c["bg"] for c in self.call_log() if "bg" in c]
@@ -509,21 +509,21 @@ class BackgroundTest(PoolCase):
             if pred():
                 return
             time.sleep(0.05)
-        self.fail("等待超时")
+        self.fail("timed out waiting")
 
     def test_waits_for_background_job_then_finishes(self):
-        os.environ["FAKE_PI_BG"] = "1.3"  # 摘要只写 >= 1s 的等待
+        os.environ["FAKE_PI_BG"] = "1.3"  # the summary only reports waits of at least 1 s
         code, out, err = self.run_pool("--prompt", "hi")
         self.assertEqual(code, 0, err)
-        self.assertIn("后台任务：Background bash · 1 running: bg-0000abcd sleep 300", err)
-        self.assertIn("pi 已停下，等待后台任务完成后继续", err)
-        self.assertIn("后台任务的结果已送达", err)
-        self.assertIn("后台任务已全部结束", err)
+        self.assertIn("background jobs: Background bash · 1 running: bg-0000abcd sleep 300", err)
+        self.assertIn("pi stopped; waiting for background jobs before finishing", err)
+        self.assertIn("background job result delivered", err)
+        self.assertIn("all background jobs finished", err)
         self.assertIn("bg result handled by agent-gamma", out)
-        self.assertIn("等后台任务", out)
-        self.assertNotIn("已随进程终止", out)
+        self.assertIn("for background jobs after pi stopped", out)
+        self.assertNotIn("were killed", out)
         self.assertEqual(self.bg_log(), ["started", "done"])
-        self.assertEqual(len(self.commands("prompt")), 1, "唤醒来自扩展，不是 pi-pool 发的 prompt")
+        self.assertEqual(len(self.commands("prompt")), 1, "the wake-up comes from the extension, not a prompt from pi-pool")
         self.assertGreaterEqual(self.state()["sessions"].popitem()[1]["runs"][0]["bg_waited_s"], 0)
 
     def test_abort_while_waiting_kills_background(self):
@@ -532,16 +532,16 @@ class BackgroundTest(PoolCase):
         sid = self.wait_running()
         self.wait_for(lambda: any(c.get("cmd", {}).get("type") == "prompt" for c in self.call_log())
                       and self.bg_log() == ["started"])
-        time.sleep(0.8)  # 让 pi 停下、pi-pool 进入等待
+        time.sleep(0.8)  # let pi stop and pi-pool start waiting
         code, err = self.send("abort", sid)
         self.assertEqual(code, 0, err)
         t.join(20)
         self.assertFalse(t.is_alive())
         rc, out, run_err = box["result"]
         self.assertEqual(rc, 1)
-        self.assertNotIn("结果都已送进对话", run_err, "关闭时的状态清除不是任务完成")
+        self.assertNotIn("results reached the conversation", run_err, "clearing the status at shutdown is not completion")
         self.assertIn("stop=aborted", out)
-        self.assertIn("已随进程终止：Background bash · 1 running: bg-0000abcd", out)
+        self.assertIn("were killed: Background bash · 1 running: bg-0000abcd", out)
         self.assertEqual(self.bg_log(), ["started", "killed"])
 
     def test_steer_while_waiting_starts_new_run(self):
@@ -549,12 +549,12 @@ class BackgroundTest(PoolCase):
         t, box = self.run_in_thread("--prompt", "hi")
         sid = self.wait_running()
         time.sleep(0.6)
-        code, err = self.send("steer", sid, "等的时候先做 E")
+        code, err = self.send("steer", sid, "meanwhile do E")
         self.assertEqual(code, 0, err)
         t.join(20)
         rc, out, _ = box["result"]
         self.assertEqual(rc, 0, out)
-        self.assertEqual([c["message"] for c in self.commands("prompt")], ["hi", "等的时候先做 E"])
+        self.assertEqual([c["message"] for c in self.commands("prompt")], ["hi", "meanwhile do E"])
         self.assertEqual(self.bg_log(), ["started", "done"])
 
     def test_quota_switch_tells_next_account_background_was_lost(self):
@@ -564,18 +564,18 @@ class BackgroundTest(PoolCase):
         self.assertEqual(code, 0, err)
         prompts = self.commands("prompt")
         self.assertEqual(prompts[1]["account"], "agent-main")
-        self.assertIn("后台 bash 任务已随进程终止", prompts[1]["message"])
+        self.assertIn("were killed with it and will not report back", prompts[1]["message"])
         self.assertIn("bg-0000abcd sleep 300", prompts[1]["message"])
 
     def test_queue_returned_at_close_keeps_stdin_open(self):
-        # clear_queue 取回消息后开新一轮：收尾定时器必须取消，否则新一轮里的 steer 发不进去
+        # clear_queue recovers a message and starts a new run: the shutdown timer must be cancelled, or a steer in that run cannot get in
         os.environ["FAKE_PI_PENDING_ON_CLEAR"] = "late"
         os.environ["FAKE_PI_DELAY"] = "1.2"
         with patch.object(pi_pool, "CLOSE_GRACE_S", 0.2):
             t, box = self.run_in_thread("--prompt", "hi")
             sid = self.wait_running()
             self.wait_for(lambda: len(self.commands("prompt")) >= 2, timeout=15)
-            time.sleep(0.5)  # 超过收尾定时器
+            time.sleep(0.5)  # past the shutdown timer
             code, err = self.send("steer", sid, "late steer")
             t.join(30)
         self.assertEqual(code, 0, err)
@@ -587,7 +587,7 @@ class BackgroundTest(PoolCase):
         self.cfg["stall_warn_s"] = 0.4
         code, _, err = self.run_pool("--prompt", "hi")
         self.assertEqual(code, 0)
-        self.assertIn("没有新事件", err)
+        self.assertIn("no events for", err)
 
 
 class AccountTest(PoolCase):
@@ -618,21 +618,21 @@ class AccountTest(PoolCase):
         base = self.cfg["base_dir"]
         for name in ("settings.json", "extensions", "AGENTS.md"):
             self.assertEqual(os.readlink(os.path.join(d, name)), os.path.join(os.path.realpath(base), name))
-        self.assertFalse(os.path.islink(os.path.join(d, "auth.json")), "凭证不共享")
-        self.assertTrue(os.path.isfile(os.path.join(d, "auth.json")), "fake 登录写了凭证")
+        self.assertFalse(os.path.islink(os.path.join(d, "auth.json")), "credentials are not shared")
+        self.assertTrue(os.path.isfile(os.path.join(d, "auth.json")), "the fake login wrote credentials")
         self.assertTrue(os.path.isfile(os.path.join(d, "settings.json.bak")))
         with open(pi_pool.CONFIG_PATH, encoding="utf-8") as f:
             saved = pi_pool.normalize_config(json.load(f))
         self.assertEqual(saved["accounts"]["new"], {"dir": d, "priority": 5, "enabled": True})
-        self.assertIn("gamma", saved["accounts"], "原有账号一起写进配置")
-        # 重复添加被拒绝
+        self.assertIn("gamma", saved["accounts"], "existing accounts are written to the config too")
+        # adding the same account again is refused
         self.assertNotEqual(self.account("add", "new", "--dir", d)[0], 0)
 
     def test_failed_login_does_not_save(self):
         os.environ["FAKE_PI_LOGIN_FAIL"] = "1"
         code, _, err = self.account("add", "bad", "--dir", os.path.join(self.tmp.name, "agent-bad"))
         self.assertEqual(code, 1)
-        self.assertIn("没有加入配置", err)
+        self.assertIn("the account was not added", err)
         self.assertFalse(os.path.exists(pi_pool.CONFIG_PATH))
 
     def test_set_remove_sync_check(self):
@@ -646,28 +646,28 @@ class AccountTest(PoolCase):
             f.write("{}")
         code, out, _ = self.account("sync", "s")
         self.assertEqual(code, 0)
-        self.assertIn("models.json: 已软链", out)
-        self.assertIn("无需改动", self.account("sync", "s")[1])
+        self.assertIn("models.json: linked", out)
+        self.assertIn("no changes", self.account("sync", "s")[1])
         os.unlink(os.path.join(self.cfg["base_dir"], "models.json"))
-        self.assertIn("models.json: 失效软链已删除", self.account("sync", "s")[1])
+        self.assertIn("models.json: dangling link removed", self.account("sync", "s")[1])
         self.assertFalse(os.path.lexists(os.path.join(d, "models.json")))
         code, out, _ = self.account("check", "s")
         self.assertEqual((code, out.split()), (1, ["s", "not_ready"]))
         with pi_pool.locked_state() as st:
             st["auth_bad"]["s"] = {"until": time.time() + 60}
         self.assertEqual(self.account("login", "s")[0], 0)
-        self.assertNotIn("s", self.state()["auth_bad"], "重新登录后清除登录失效记录")
+        self.assertNotIn("s", self.state()["auth_bad"], "a new login clears the expired-login record")
         self.assertEqual(self.account("check", "s")[0], 0)
         self.assertEqual(self.account("remove", "s")[0], 0)
         self.assertNotIn("s", self.cfg["accounts"])
-        self.assertTrue(os.path.isdir(d), "移除不删目录")
+        self.assertTrue(os.path.isdir(d), "remove does not delete the directory")
 
     def test_doctor_reports_failures(self):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             code = pi_pool.cmd_doctor(self.cfg, [])
-        self.assertEqual(code, 1, out.getvalue())  # 测试账号目录都不存在
-        self.assertIn("[FAIL] 账号 gamma", out.getvalue())
+        self.assertEqual(code, 1, out.getvalue())  # none of the test account directories exist
+        self.assertIn("[FAIL] account gamma", out.getvalue())
         self.assertIn("pi 0.0.0-fake", out.getvalue())
 
 

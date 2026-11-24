@@ -121,7 +121,7 @@ Quota comes from `https://chatgpt.com/backend-api/wham/usage`, the same data the
 
 ## Waiting for background jobs
 
-From version 0.1.6, pi-async-bash reports background bash jobs in RPC mode through `setStatus` under the key `async-bash`. The status covers commands that are still running and finished jobs whose results have not reached the conversation yet. Foreground bash never appears in it. pi-pool prints each status change to stderr as a `后台任务：…` line.
+From version 0.1.6, pi-async-bash reports background bash jobs in RPC mode through `setStatus` under the key `async-bash`. The status covers commands that are still running and finished jobs whose results have not reached the conversation yet. Foreground bash never appears in it. pi-pool prints each status change to stderr as a `background jobs: …` line.
 
 `agent_settled` alone does not tell you that pi is finished. It only means pi has no retries, compaction, or queued messages left to process; it knows nothing about background jobs held by extensions. If pi-pool closed stdin at that point, pi would shut down and the extension would cancel every background job. So, while the `async-bash` status is set, pi-pool keeps stdin open and waits. When a job finishes, the extension wakes the agent for a new run, which pi-pool handles as usual. pi-pool shuts pi down only once pi has stopped and no background jobs remain.
 

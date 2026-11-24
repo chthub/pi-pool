@@ -35,9 +35,9 @@ pi-pool run --session <ID prefix> --prompt "Acceptance command X failed, output:
 ## 3. While it runs
 
 - Do not watch the run. Normally the background output gets one progress line per turn. Look only when one of these lines appears:
-  - `… 没有新事件；工具 X 已运行 …`: nothing has happened for a while and the run may be stuck.
-  - `注意：连续 N 次工具调用出错`: N tool calls in a row have failed.
-  - `后台任务：…` or `pi 已停下，等待后台任务完成后继续`: pi is waiting for a command it moved to the background (for example a cluster job). This is normal. pi-pool will not exit, and there is no overall time limit.
+  - `no events for …; tool X has been running for …`: the run may be stuck.
+  - `warning: N tool calls failed in a row`.
+  - `background jobs: …` or `pi stopped; waiting for background jobs before finishing`: pi is waiting for a command it moved to the background (for example a cluster job). This is normal. pi-pool will not exit, and there is no overall time limit.
 - To change direction or add information, use `steer`/`followup`; do not kill the process:
   ```bash
   pi-pool steer <ID prefix> "Do X instead…"          # delivered after the current tool call
@@ -45,17 +45,17 @@ pi-pool run --session <ID prefix> --prompt "Acceptance command X failed, output:
   pi-pool followup <ID prefix> "Afterwards, do Y"
   pi-pool abort <ID prefix>                          # stops the run; while waiting, also kills background jobs
   ```
-  For long messages, write them to a file and pass `--file`. A message counts as sent only when the command reports `已送达` (delivered). Exit code 1 means the run has ended; use `run --session` instead.
-- `pi-pool ls` lists recent sessions; running ones show as `运行中(account)`. `pi-pool show <ID>` shows the answer so far and the account used for each run.
+  For long messages, write them to a file and pass `--file`. A message counts as sent only when the command reports `delivered`. Exit code 1 means the run has ended; use `run --session` instead.
+- `pi-pool ls` lists recent sessions; running ones show as `running(account)`. `pi-pool show <ID>` shows the answer so far and the account used for each run.
 
 ## 4. Results
 
-From the stdout summary, read only: the account path (for example `acct1(额度) → acct2`, where `额度` marks a quota refusal), exit, stop, turns, time, tool-call counts, time spent waiting for background jobs, the log path, and then the final answer after `---`. The raw event stream is at the log path; open it only for debugging.
+From the stdout summary, read only: the account path (for example `acct1(quota) → acct2`; `(quota)` and `(login)` mark the account that was refused), exit, stop, turns, time, tool-call counts, time spent waiting for background jobs, the log path, and then the final answer after `---`. The raw event stream is at the log path; open it only for debugging.
 
 Exit codes: 0 success; 1 pi failed (see the error in the summary); 2 bad arguments; 75 no usable account.
 
 - Exit code 75: tell the user what `pi-pool status` shows. Do not quietly take over a large task yourself.
-- If the summary or stderr says `登录失效，需要 pi-pool account login NAME` (login expired), pi-pool has already switched accounts and continued. Ask the user to run `! pi-pool account login NAME` in their terminal; device-code login needs the user.
+- If the summary or stderr says `login expired; run pi-pool account login NAME`, pi-pool has already switched accounts and continued. Ask the user to run `! pi-pool account login NAME` in their terminal; device-code login needs the user.
 
 ## 5. Review
 

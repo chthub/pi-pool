@@ -101,32 +101,32 @@ INBOX_DIR = os.path.join(POOL_DIR, "inbox")
 QUOTA_CACHE = os.path.join(POOL_DIR, "quota.json")
 STATE_PATH = os.path.join(POOL_DIR, "state.json")
 STATE_LOCK = os.path.join(POOL_DIR, "state.lock")
-# 调用方会话：各客户端给自己的 shell 设的会话 ID。记进每次运行，事后可据此关联父会话。
+# Caller session: the session ID each client sets in its shell. Recorded per run, to trace a child back to its parent.
 CALLER_VARS = {"claude": "CLAUDE_CODE_SESSION_ID", "pi": "PI_SESSION_ID",
                "codex": "CODEX_THREAD_ID"}
 
-DEFAULT_BASE_DIR = "~/.pi/agent"  # pi 的默认目录；新账号的设置、扩展、skill 都软链到这里
+DEFAULT_BASE_DIR = "~/.pi/agent"  # pi's default directory; new accounts link settings, extensions and skills from here
 DEFAULT_PROVIDER = "openai-codex"
-DEFAULT_PRIORITY = 50            # 数字小的先用
-LAST_RESORT_PRIORITY = 90        # 旧配置 last_resort 里的账号换算成的优先级
+DEFAULT_PRIORITY = 50            # lower numbers are used first
+LAST_RESORT_PRIORITY = 90        # priority given to accounts listed in the legacy last_resort
 DEFAULT_LOW_PCT = 5
-DEFAULT_QUOTA_TTL = 120          # 秒；额度缓存的有效期
-DEFAULT_AUTH_COOLDOWN = 7 * 24 * 3600  # 秒；登录失效的账号重新登录前不再用
-DEFAULT_STALL_WARN = 600         # 秒；这么久没有任何事件就在 stderr 提示一次
-TOOL_ERROR_WARN = 5              # 连续这么多次工具调用出错就提示
-WATCH_TICK_S = 30                # 看门狗多久检查一次
-BG_STATUS_KEY = "async-bash"     # pi-async-bash 在 RPC 模式下报告后台任务用的状态键
-# 新账号目录里不软链的项：凭证各自独立，会话由 pi-pool 统一放在 ~/.pi/pool/sessions
+DEFAULT_QUOTA_TTL = 120          # seconds; quota cache lifetime
+DEFAULT_AUTH_COOLDOWN = 7 * 24 * 3600  # seconds; an account with an expired login is skipped until re-login
+DEFAULT_STALL_WARN = 600         # seconds without any event before one stderr notice
+TOOL_ERROR_WARN = 5              # notice after this many consecutive failed tool calls
+WATCH_TICK_S = 30                # watchdog check interval
+BG_STATUS_KEY = "async-bash"     # status key pi-async-bash uses for background jobs in RPC mode
+# Entries not linked into new account directories: credentials stay separate; sessions live in ~/.pi/pool/sessions
 UNSHARED = {"auth.json"}
-DEFAULT_COOLDOWN = 3600          # 秒；被拒绝但不知道何时恢复时的冷却
-QUOTA_TIMEOUT = 20               # 秒；单个账号额度查询的超时
-INBOX_POLL_S = 0.5               # 运行中的 pi-pool 多久看一次收件箱
-ACK_WAIT_S = 20                  # steer 等命令默认等多久送达确认
-CLOSE_GRACE_S = 15               # 收尾时等 clear_queue 回应的上限
+DEFAULT_COOLDOWN = 3600          # seconds; cooldown after a refusal with no known recovery time
+QUOTA_TIMEOUT = 20               # seconds; timeout of one account's quota query
+INBOX_POLL_S = 0.5               # how often a running pi-pool checks its inbox
+ACK_WAIT_S = 20                  # default wait for a delivery acknowledgement (steer etc.)
+CLOSE_GRACE_S = 15               # upper bound on waiting for the clear_queue response at shutdown
 INBOX_KINDS = ("steer", "follow_up", "interrupt", "abort")
 DIALOG_METHODS = {"select", "confirm", "input", "editor"}
 
-# 会话由 pi-pool 管理，这些 pi 参数不允许透传
+# pi-pool manages sessions itself; these pi arguments may not be passed through
 FORBIDDEN_PI_ARGS = {"--session", "--session-id", "--session-dir", "--no-session",
                      "--continue", "-c", "--resume", "-r", "--fork", "--mode",
                      "--print", "-p", "--export"}
@@ -138,29 +138,29 @@ QUOTA_ERROR_RE = re.compile(
     r"(?<![0-9])429(?![0-9])|quota|insufficient_quota", re.IGNORECASE)
 TRY_AGAIN_RE = re.compile(r"try again in ~?(\d+)\s*min", re.IGNORECASE)
 
-CONTINUE_PROMPT = ("（pi-pool）上一轮在账号 {old} 上因{why}中断，现已切换到账号 {new}。"
-                   "继续完成上面的任务，已经完成的部分不要重做。")
-BG_LOST_NOTE = ("上一个进程里的后台 bash 任务已随进程终止，不会再有结果送回（{status}）。"
-                "需要这些结果的话重新运行对应命令。")
+CONTINUE_PROMPT = ("(pi-pool) The previous turn on account {old} was interrupted by {why}; switched to "
+                   "account {new}. Continue the task above; do not redo parts already finished.")
+BG_LOST_NOTE = (" Background bash jobs from the previous process were killed with it and will not report "
+                "back ({status}). Rerun those commands if you need their results.")
 
 
-# --------------------------------------------------------------- 配置与状态
+# --------------------------------------------------------------- configuration and state
 
 def _number(user: dict[str, Any], key: str) -> Any:
     v = user[key]
     if not isinstance(v, (int, float)) or isinstance(v, bool):
-        raise SystemExit(f"pi-pool: {key} 必须是数字")
+        raise SystemExit(f"pi-pool: {key} must be a number")
     return v
 
 
 def normalize_config(user: dict[str, Any]) -> dict[str, Any]:
-    """把配置文件（或旧格式）整理成统一结构。
+    """Normalize the configuration file (or the legacy format) into one structure.
 
-    accounts 的值可以是目录字符串（旧格式），也可以是 {"dir", "priority", "enabled"}。
-    旧格式的 last_resort 换算成优先级 90，其余账号默认 50。
+    Account values may be a directory string (legacy) or {"dir", "priority", "enabled"}.
+    Accounts in the legacy last_resort get priority 90; all others default to 50.
     """
     if not isinstance(user, dict):
-        raise SystemExit(f"pi-pool: {CONFIG_PATH} 必须是 JSON 对象")
+        raise SystemExit(f"pi-pool: {CONFIG_PATH} must be a JSON object")
     cfg: dict[str, Any] = {"low_pct": DEFAULT_LOW_PCT, "quota_ttl_s": DEFAULT_QUOTA_TTL,
                            "stall_warn_s": DEFAULT_STALL_WARN,
                            "auth_cooldown_s": DEFAULT_AUTH_COOLDOWN,
@@ -171,30 +171,30 @@ def normalize_config(user: dict[str, Any]) -> dict[str, Any]:
     for key in ("base_dir", "provider"):
         if key in user:
             if not isinstance(user[key], str) or not user[key]:
-                raise SystemExit(f"pi-pool: {key} 必须是非空字符串")
+                raise SystemExit(f"pi-pool: {key} must be a non-empty string")
             cfg[key] = user[key]
     last = user.get("last_resort", [])
     if not isinstance(last, list) or not all(isinstance(x, str) for x in last):
-        raise SystemExit("pi-pool: last_resort 必须是账号名数组")
+        raise SystemExit("pi-pool: last_resort must be an array of account names")
     raw = user.get("accounts")
     if raw is None:
         raw = {}
     if not isinstance(raw, dict):
-        raise SystemExit("pi-pool: accounts 必须是 {名字: 目录或 {dir, priority, enabled}} 对象")
+        raise SystemExit("pi-pool: accounts must be an object of {name: directory or {dir, priority, enabled}}")
     accounts: dict[str, dict[str, Any]] = {}
     for name, v in raw.items():
         if not re.fullmatch(r"[A-Za-z0-9_.-]+", name):
-            raise SystemExit(f"pi-pool: 账号名 {name!r} 只能用字母、数字、_ . -")
+            raise SystemExit(f"pi-pool: account name {name!r} may only contain letters, digits, _ . -")
         if isinstance(v, str):
             v = {"dir": v}
         if not isinstance(v, dict) or not isinstance(v.get("dir"), str) or not v["dir"]:
-            raise SystemExit(f"pi-pool: 账号 {name} 需要 dir（agent 目录）")
+            raise SystemExit(f"pi-pool: account {name} needs a dir (agent directory)")
         prio = v.get("priority", LAST_RESORT_PRIORITY if name in last else DEFAULT_PRIORITY)
         if not isinstance(prio, int) or isinstance(prio, bool):
-            raise SystemExit(f"pi-pool: 账号 {name} 的 priority 必须是整数")
+            raise SystemExit(f"pi-pool: priority of account {name} must be an integer")
         enabled = v.get("enabled", True)
         if not isinstance(enabled, bool):
-            raise SystemExit(f"pi-pool: 账号 {name} 的 enabled 必须是 true/false")
+            raise SystemExit(f"pi-pool: enabled of account {name} must be true/false")
         accounts[name] = {"dir": v["dir"], "priority": prio, "enabled": enabled}
     cfg["accounts"] = accounts
     return cfg
@@ -205,20 +205,20 @@ def load_config() -> dict[str, Any]:
         with open(CONFIG_PATH, encoding="utf-8") as f:
             user = json.load(f)
     except FileNotFoundError:
-        # 没有配置：pi 的默认目录存在就把它当作唯一账号 main
+        # No configuration: use pi's default directory, if present, as the only account "main"
         present = {"main": DEFAULT_BASE_DIR} if os.path.isdir(os.path.expanduser(DEFAULT_BASE_DIR)) else {}
         cfg = normalize_config({"accounts": present})
         cfg["from_file"] = False
         return cfg
     except (OSError, ValueError) as e:
-        raise SystemExit(f"pi-pool: 读不了配置 {CONFIG_PATH}: {e}") from e
+        raise SystemExit(f"pi-pool: cannot read config {CONFIG_PATH}: {e}") from e
     cfg = normalize_config(user)
     cfg["from_file"] = True
     return cfg
 
 
 def config_for_file(cfg: dict[str, Any]) -> dict[str, Any]:
-    """写回配置文件的内容：只留用户可调的键，默认值也写出来，方便手改。"""
+    """Contents written back to the config file: user-tunable keys only, defaults included for easy editing."""
     keys = ("base_dir", "provider", "low_pct", "quota_ttl_s", "stall_warn_s", "auth_cooldown_s")
     out: dict[str, Any] = {k: cfg[k] for k in keys}
     out["accounts"] = {n: dict(a) for n, a in cfg["accounts"].items()}
@@ -261,7 +261,7 @@ def write_json(path: str, data: Any) -> None:
 
 @contextlib.contextmanager
 def locked_state() -> Iterator[dict[str, Any]]:
-    """读改写 state.json；并行的 pi-pool 进程靠文件锁串行。"""
+    """Read-modify-write state.json; concurrent pi-pool processes are serialized by a file lock."""
     ensure_dirs()
     with open(STATE_LOCK, "a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
@@ -281,12 +281,12 @@ def load_state() -> dict[str, Any]:
     return state
 
 
-# --------------------------------------------------------------- 额度
+# --------------------------------------------------------------- quota
 
-# ChatGPT/Codex 订阅的额度接口，和 codex CLI 状态栏是同一份数据。只读，不刷新凭证。
+# Quota endpoint of ChatGPT/Codex subscriptions; the same data as the codex CLI status line. Read-only; never refreshes credentials.
 WHAM_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 JWT_AUTH_CLAIM = "https://api.openai.com/auth"
-CODEX_CLIENT_VERSION = "0.144.0"   # UA 里报的 codex 版本，后端按它判断客户端新旧
+CODEX_CLIENT_VERSION = "0.144.0"   # codex version reported in the UA; the backend uses it to judge the client
 AUTH_KEYS = ("openai-codex", "openai")
 
 
@@ -295,7 +295,7 @@ def as_dict(x: Any) -> dict[str, Any]:
 
 
 def jwt_claims(token: Any) -> dict[str, Any]:
-    """只解 JWT 的 payload 段拿套餐和账号 ID，不验签（签名归服务端验）。"""
+    """Decode only the JWT payload to get plan and account ID; no signature check (the server verifies it)."""
     if not isinstance(token, str):
         return {}
     try:
@@ -307,32 +307,32 @@ def jwt_claims(token: Any) -> dict[str, Any]:
 
 
 def read_codex_cred(path: str) -> tuple[dict[str, Any] | None, str]:
-    """从 pi 的 auth.json 取 ChatGPT OAuth 凭据；错误信息不含凭据内容。"""
+    """Get the ChatGPT OAuth credential from pi's auth.json; error messages never include credential contents."""
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
     except FileNotFoundError:
-        return None, "没有 auth.json（pi-pool account login 登录）"
+        return None, "no auth.json (log in with pi-pool account login)"
     except (OSError, ValueError):
-        return None, "auth.json 读不了或格式损坏"
+        return None, "auth.json is unreadable or malformed"
     if not isinstance(data, dict):
-        return None, "auth.json 不是 JSON 对象"
+        return None, "auth.json is not a JSON object"
     for key in AUTH_KEYS:
         cred = data.get(key)
         if not isinstance(cred, dict):
             continue
         if key == "openai" and cred.get("type") != "oauth":
-            continue   # API key 不能查订阅额度
+            continue   # an API key cannot query subscription quota
         if not isinstance(cred.get("access"), str) or not cred["access"]:
-            return None, f"auth.json 里的 {key} 没有 access token"
+            return None, f"{key} in auth.json has no access token"
         return cred, ""
-    return None, "auth.json 里没有 openai-codex OAuth 凭据"
+    return None, "no openai-codex OAuth credential in auth.json"
 
 
 def window_label(seconds: Any) -> str | None:
-    """窗口标签按服务端报的时长生成（5h、7d……），不假定主窗口一定是 5 小时。"""
+    """Window label from the duration the server reports (5h, 7d, ...); the primary window is not assumed to be 5 hours."""
     if not isinstance(seconds, (int, float)) or isinstance(seconds, bool) or seconds <= 0:
-        return None   # 套餐关掉了这个窗口
+        return None   # the plan has this window turned off
     mins = int(seconds // 60)
     if mins % 1440 == 0:
         return f"{mins // 1440}d"
@@ -342,10 +342,10 @@ def window_label(seconds: Any) -> str | None:
 
 
 def parse_usage(data: Any, now: float | None = None) -> dict[str, Any]:
-    """把 /wham/usage 的回应整理成分级用的记录：allowed、各窗口剩余百分比与重置时刻。"""
+    """Turn a /wham/usage response into a tiering record: allowed, remaining percent and reset time per window."""
     now = time.time() if now is None else now
     if not isinstance(data, dict):
-        return {"ok": False, "allowed": None, "buckets": [], "issues": [{"text": "额度回应不是对象"}]}
+        return {"ok": False, "allowed": None, "buckets": [], "issues": [{"text": "quota response is not an object"}]}
     rl = as_dict(data.get("rate_limit"))
     windows = []
     for key in ("primary_window", "secondary_window"):
@@ -369,7 +369,7 @@ def parse_usage(data: Any, now: float | None = None) -> dict[str, Any]:
         allowed = False
     return {"ok": bool(windows), "allowed": allowed if isinstance(allowed, bool) else None,
             "buckets": [{"name": "codex", "windows": windows}] if windows else [],
-            "issues": [] if windows else [{"text": "额度回应里没有窗口数据"}]}
+            "issues": [] if windows else [{"text": "quota response has no window data"}]}
 
 
 def query_account_quota(auth_path: str) -> dict[str, Any]:
@@ -391,11 +391,11 @@ def query_account_quota(auth_path: str) -> dict[str, Any]:
                                     timeout=QUOTA_TIMEOUT) as r:
             data = json.loads(r.read())
     except urllib.error.HTTPError as e:
-        hint = "（登录可能失效：pi-pool account login）" if e.code in (401, 403) else ""
-        rec = {"ok": False, "allowed": None, "buckets": [], "issues": [{"text": f"额度查询 HTTP {e.code}{hint}"}]}
+        hint = " (login may have expired: pi-pool account login)" if e.code in (401, 403) else ""
+        rec = {"ok": False, "allowed": None, "buckets": [], "issues": [{"text": f"quota query HTTP {e.code}{hint}"}]}
     except (OSError, ValueError, http.client.HTTPException) as e:
         rec = {"ok": False, "allowed": None, "buckets": [],
-               "issues": [{"text": f"额度查询失败: {type(e).__name__}"}]}
+               "issues": [{"text": f"quota query failed: {type(e).__name__}"}]}
     else:
         rec = parse_usage(data)
     rec["plan"] = plan
@@ -403,10 +403,10 @@ def query_account_quota(auth_path: str) -> dict[str, Any]:
 
 
 def fetch_quota(cfg: dict[str, Any]) -> dict[str, Any]:
-    """并行查询每个启用账号的额度。"""
+    """Query the quota of every enabled account in parallel."""
     names = active_accounts(cfg)
     if not names:
-        return {"fetched_at": time.time(), "error": "没有启用的账号", "accounts": {}}
+        return {"fetched_at": time.time(), "error": "no enabled accounts", "accounts": {}}
     out: dict[str, dict[str, Any]] = {}
 
     def one(n: str) -> None:
@@ -446,22 +446,22 @@ def main_windows(rec: dict[str, Any] | None) -> list[dict[str, Any]]:
 
 def classify(name: str, rec: dict[str, Any] | None, state: dict[str, Any],
              low_pct: float) -> tuple[str, str]:
-    """返回 (分级, 说明)。"""
+    """Return (tier, note)."""
     bad = state.get("auth_bad", {}).get(name)
     if bad and bad.get("until", 0) > time.time():
-        return "blocked", f"登录失效，需要 pi-pool account login {name}（{bad.get('reason', '')[:80]}）"
+        return "blocked", f"login expired; run pi-pool account login {name} ({bad.get('reason', '')[:80]})"
     until = state["cooldown"].get(name, {}).get("until", 0)
     if until > time.time():
-        return "blocked", f"本机冷却到 {clock(until)}（{state['cooldown'][name].get('reason', '')}）"
+        return "blocked", f"local cooldown until {clock(until)} ({state['cooldown'][name].get('reason', '')})"
     if not rec or not rec.get("ok"):
         issues = (rec or {}).get("issues") or []
-        return "unknown", issues[0]["text"] if issues else "额度没查到"
+        return "unknown", issues[0]["text"] if issues else "quota not available"
     if rec.get("allowed") is False:
-        return "blocked", "服务端 allowed=false"
+        return "blocked", "server: allowed=false"
     low = [w for w in main_windows(rec) if w["remaining_pct"] < low_pct]
     if low:
-        return "low", "，".join(f"{w['window']} 剩 {w['remaining_pct']:.0f}%"
-                               f"（{clock(w['reset_at'])} 重置）" for w in low)
+        return "low", ", ".join(f"{w['window']} {w['remaining_pct']:.0f}% left"
+                               f" (resets {clock(w['reset_at'])})" for w in low)
     return "ok", ""
 
 
@@ -470,7 +470,7 @@ def headroom(rec: dict[str, Any] | None) -> float:
 
 
 def running_counts(state: dict[str, Any]) -> Counter[str]:
-    """各账号上正在运行的会话数，用来把并行任务分散到不同账号。"""
+    """Running sessions per account, used to spread parallel tasks across accounts."""
     out: Counter[str] = Counter()
     for rec in state["sessions"].values():
         run = rec.get("running")
@@ -481,15 +481,15 @@ def running_counts(state: dict[str, Any]) -> Counter[str]:
 
 def rank(cfg: dict[str, Any], quota: dict[str, Any], state: dict[str, Any], size: str,
          exclude: set[str], prefer: str | None) -> list[tuple[str, str, str]]:
-    """可用账号按优先顺序排列，返回 [(账号, 分级, 说明)]。
+    """Usable accounts in order of preference, as [(account, tier, note)].
 
-    排序依次看：
-    1. priority（配置里的整数，小的先用）；
-    2. 会话上次用的账号排在同优先级第一，复用它的提示缓存；
-    3. 分级：大任务 ok 优先、unknown 兜底；小任务先用 low，把 ok 账号的额度留给大任务；
-    4. 正在运行的会话少的先用，并行任务分散到不同账号；
-    5. 剩余额度多的先用。
-    停用的账号不参与。
+    Sorted by:
+    1. priority (an integer in the config, lower first);
+    2. the account the session used last, first within its priority, to reuse its prompt cache;
+    3. tier: large tasks prefer ok with unknown as fallback; small tasks use low first, saving ok accounts for large tasks;
+    4. fewer running sessions first, spreading parallel tasks across accounts;
+    5. more remaining quota first.
+    Disabled accounts are excluded.
     """
     tiers = {"large": ("ok", "unknown"), "small": ("low", "ok", "unknown")}[size]
     busy = running_counts(state)
@@ -506,7 +506,7 @@ def rank(cfg: dict[str, Any], quota: dict[str, Any], state: dict[str, Any], size
     return [(n, tier, why) for n, tier, why, _ in rows]
 
 
-# --------------------------------------------------------------- 显示
+# --------------------------------------------------------------- display
 
 def clock(ts: float | None) -> str:
     if not ts:
@@ -530,7 +530,7 @@ def cmd_status(cfg: dict[str, Any], args: list[str]) -> int:
         rec = quota["accounts"].get(n)
         tier, why = classify(n, rec, state, cfg["low_pct"])
         if not acc["enabled"]:
-            tier, why = "disabled", "已停用（pi-pool account set " + n + " --enable 启用）"
+            tier, why = "disabled", "disabled (pi-pool account set " + n + " --enable to enable)"
         rows.append({"account": n, "agent_dir": acc["dir"], "priority": acc["priority"],
                      "enabled": acc["enabled"], "running": busy[n],
                      "plan": (rec or {}).get("plan"), "allowed": (rec or {}).get("allowed"),
@@ -541,11 +541,11 @@ def cmd_status(cfg: dict[str, Any], args: list[str]) -> int:
                           "low_pct": cfg["low_pct"], "accounts": rows}, ensure_ascii=False))
         return 0
     age = int(time.time() - quota["fetched_at"])
-    print(f"额度数据 {age}s 前；low 阈值 {cfg['low_pct']}%"
-          + (f"；{quota['error']}" if quota.get("error") else ""))
+    print(f"quota data {age}s old; low threshold {cfg['low_pct']}%"
+          + (f"; {quota['error']}" if quota.get("error") else ""))
     if not cfg["from_file"]:
-        print(f"（没有配置文件 {CONFIG_PATH}，用的是本机已有的默认目录；"
-              "pi-pool account add / set 会生成它）")
+        print(f"(no config file {CONFIG_PATH}; using the default directory. "
+              "pi-pool account add / set will create it)")
     print(f"{'account':<8}{'prio':>4} {'plan':<9}{'allowed':<8}{'5h':>6}{'7d':>6}{'run':>4}  "
           f"{'tier':<9}note")
     for r in rows:
@@ -556,13 +556,13 @@ def cmd_status(cfg: dict[str, Any], args: list[str]) -> int:
     return 0
 
 
-# --------------------------------------------------------------- 参数
+# --------------------------------------------------------------- arguments
 
 def take(args: list[str], name: str, default: str | None = None) -> str | None:
     for i, a in enumerate(args):
         if a == name:
             if i + 1 >= len(args):
-                raise SystemExit(f"pi-pool: {name} 需要一个值")
+                raise SystemExit(f"pi-pool: {name} needs a value")
             value = args[i + 1]
             del args[i:i + 2]
             return value
@@ -580,9 +580,9 @@ def take_flag(args: list[str], name: str) -> bool:
 
 
 def session_files(prefix: str) -> dict[str, str]:
-    """在会话目录里按 ID 前缀找 pi 的会话文件，返回 {会话 ID: cwd}。
+    """Find pi session files in the session directory by ID prefix; return {session ID: cwd}.
 
-    state.json 里没登记的会话（例如运行被 kill 前没来得及登记）靠这里找回。
+    Recovers sessions missing from state.json (for example a run killed before it was recorded).
     """
     out: dict[str, str] = {}
     try:
@@ -605,7 +605,7 @@ def session_files(prefix: str) -> dict[str, str]:
 
 
 def resolve_session(state: dict[str, Any], sid: str) -> str:
-    """把会话 ID 或前缀解析成完整 ID；找不到就报错，不会悄悄新建会话。"""
+    """Resolve a session ID or prefix to the full ID; fail rather than silently start a new session."""
     if sid in state["sessions"]:
         return sid
     hits = [s for s in state["sessions"] if s.startswith(sid)]
@@ -614,15 +614,15 @@ def resolve_session(state: dict[str, Any], sid: str) -> str:
     if len(hits) == 1:
         return hits[0]
     if len(hits) > 1:
-        raise SystemExit(f"pi-pool: 会话前缀 {sid} 对应多个会话: {', '.join(hits[:5])}")
-    raise SystemExit(f"pi-pool: 找不到会话 {sid}（state.json 和 {SESSION_DIR} 里都没有）；"
-                     "开新会话不要加 --session")
+        raise SystemExit(f"pi-pool: session prefix {sid} matches several sessions: {', '.join(hits[:5])}")
+    raise SystemExit(f"pi-pool: no session {sid} (not in state.json or {SESSION_DIR}); "
+                     "to start a new session, omit --session")
 
 
 def check_size(size: str | None) -> str:
     size = size or "large"
     if size not in ("large", "small"):
-        raise SystemExit("pi-pool: --size 只能是 large 或 small")
+        raise SystemExit("pi-pool: --size must be large or small")
     return size
 
 
@@ -634,14 +634,14 @@ def cmd_pick(cfg: dict[str, Any], args: list[str]) -> int:
     ranked = rank(cfg, get_quota(cfg, refresh=take_flag(args, "--refresh")), state, size,
                   set(), prefer)
     if not ranked:
-        print(f"pi-pool: 没有能接 {size} 任务的账号", file=sys.stderr)
+        print(f"pi-pool: no account can take a {size} task", file=sys.stderr)
         return 75
     for n, tier, why in ranked:
         print(f"{n}\t{tier}\t{why}")
     return 0
 
 
-# --------------------------------------------------------------- 运行
+# --------------------------------------------------------------- running
 
 class RunResult:
     def __init__(self) -> None:
@@ -656,9 +656,9 @@ class RunResult:
         self.usage: Counter[str] = Counter()
         self.returncode: int | None = None
         self.stderr_tail: list[str] = []
-        self.injected: Counter[str] = Counter()   # 运行中转发进去的插话，按种类计数
-        self.bg_waited_s = 0.0                    # pi 停下后等后台任务用了多久（秒）
-        self.bg_left: str | None = None           # pi 退出时还没完成的后台任务（会随进程终止）
+        self.injected: Counter[str] = Counter()   # messages injected during the run, by kind
+        self.bg_waited_s = 0.0                    # seconds spent waiting for background jobs after pi stopped
+        self.bg_left: str | None = None           # background jobs still pending when pi exited (killed with it)
 
 
 def assistant_text(msg: dict[str, Any]) -> str:
@@ -687,23 +687,23 @@ def absorb(res: RunResult, ev: dict[str, Any], progress: bool) -> None:
             res.stop_reason = msg.get("stopReason")
             res.error = msg.get("errorMessage") if res.stop_reason == "error" else None
             for k, v in (msg.get("usage") or {}).items():
-                # 只累计 token 数；cost 是嵌套对象，跳过
+                # only token counts are summed; cost is a nested object and skipped
                 if isinstance(v, int) and not isinstance(v, bool):
                     res.usage[k] += v
             if progress:
                 calls = [b.get("name") for b in msg.get("content") or []
                          if isinstance(b, dict) and b.get("type") == "toolCall"]
-                progress_line(f"第 {res.turns} 轮 stop={res.stop_reason}"
-                              + (f" 调用 {','.join(map(str, calls))}" if calls else "")
-                              + (f" 错误: {res.error[:200]}" if res.error else ""))
+                progress_line(f"turn {res.turns} stop={res.stop_reason}"
+                              + (f" calls {','.join(map(str, calls))}" if calls else "")
+                              + (f" error: {res.error[:200]}" if res.error else ""))
     elif t == "tool_execution_end":
         res.tools[str(ev.get("toolName"))] += 1
         if ev.get("isError"):
             res.tool_errors += 1
             res.tool_error_streak += 1
             if progress and res.tool_error_streak % TOOL_ERROR_WARN == 0:
-                progress_line(f"注意：连续 {res.tool_error_streak} 次工具调用出错"
-                              f"（最近一次 {ev.get('toolName')}）")
+                progress_line(f"warning: {res.tool_error_streak} tool calls failed in a row"
+                              f" (last: {ev.get('toolName')})")
         else:
             res.tool_error_streak = 0
 
@@ -718,14 +718,14 @@ def clean_status(text: Any) -> str | None:
     return text or None
 
 
-# ---- 收件箱：steer/followup/abort 命令写入，正在运行的 pi-pool 取走并转给 pi
+# ---- inbox: steer/followup/abort write messages; the running pi-pool takes them and forwards them to pi
 
 def inbox_dir(session: str) -> str:
     return os.path.join(INBOX_DIR, session)
 
 
 def post_inbox(session: str, kind: str, message: str) -> str:
-    """原子地写入一条消息，返回文件名。"""
+    """Write one message atomically; return its file name."""
     d = inbox_dir(session)
     os.makedirs(d, exist_ok=True)
     name = f"{time.time_ns()}-{kind}.json"
@@ -745,7 +745,7 @@ def pending_inbox(session: str) -> list[str]:
 
 
 def claim_inbox(session: str, name: str) -> dict[str, Any] | None:
-    """取走一条消息；已被撤回或取走时返回 None。靠 rename 保证只有一方拿到。"""
+    """Take one message; None if it was withdrawn or already taken. rename ensures only one side gets it."""
     d = inbox_dir(session)
     claimed = os.path.join(d, ".claimed-" + name)
     try:
@@ -770,14 +770,14 @@ def ack_path(session: str, name: str) -> str:
 
 
 class PiRpc:
-    """一次 `pi --mode rpc` 运行：发任务，转发收件箱里的插话，等 pi 真正没有事可做后收尾。
+    """One `pi --mode rpc` run: send the task, forward inbox messages, and shut down once pi truly has nothing left.
 
-    「没有事可做」= 收到 agent_settled，且 pi-async-bash 报告的后台任务（setStatus
-    键 async-bash）都已完成并把结果送进对话。后台任务还在时不关 stdin：任务完成后
-    扩展会唤醒 agent 开始新一轮，pi-pool 照常接着处理。
+    "Nothing left" means agent_settled has arrived and every background job pi-async-bash reports (setStatus
+    key async-bash) has finished and delivered its result. While jobs remain, stdin stays open: when one
+    finishes, the extension wakes the agent for a new run, which pi-pool handles as usual.
 
-    主线程读 pi 的 stdout 并处理回应和事件；一个线程轮询收件箱，一个线程做看门狗。
-    写 stdin 和改状态时共用 self.lock。
+    The main thread reads pi's stdout and handles responses and events; one thread polls the inbox and one
+    runs the watchdog. Writes to stdin and state changes share self.lock.
     """
 
     def __init__(self, proc: subprocess.Popen[bytes], session: str, res: RunResult,
@@ -788,25 +788,25 @@ class PiRpc:
         self.progress = progress
         self.stall_warn_s = stall_warn_s
         self.lock = threading.RLock()
-        self.active = False       # pi 正在跑一次运行（我们发起的，或扩展唤醒的）
-        self.waiting_bg = False   # pi 已停下，在等后台任务
+        self.active = False       # pi is in a run (started by us or woken by an extension)
+        self.waiting_bg = False   # pi has stopped and we are waiting for background jobs
         self.wait_since = 0.0
-        self.finishing = False    # 已决定收尾，不再转发
+        self.finishing = False    # shutdown decided; nothing more is forwarded
         self.abort_requested = False
         self.stdin_closed = False
         self.close_timer: threading.Timer | None = None
-        self.run_prompt: str | None = None         # 发起当前运行的 prompt 命令 id
-        self.after_abort: list[dict[str, Any]] = []  # --now 的消息：中止后作为新指令发
+        self.run_prompt: str | None = None         # id of the prompt command that started the current run
+        self.after_abort: list[dict[str, Any]] = []  # --now messages: sent as a new prompt after the abort
         self.callbacks: dict[str, Callable[[dict[str, Any]], None]] = {}
         self.seq = 0
         self.stop = threading.Event()
-        self.bg_status: str | None = None          # async-bash 当前报告的后台任务
-        self.bg_at_close: str | None = None        # 决定关闭 pi 时还没完成的后台任务
+        self.bg_status: str | None = None          # background jobs currently reported by async-bash
+        self.bg_at_close: str | None = None        # background jobs still pending when we decided to shut pi down
         self.last_event = time.time()
         self.last_warn = 0.0
-        self.tools_running: dict[str, tuple[str, float]] = {}  # toolCallId -> (工具名, 开始时间)
+        self.tools_running: dict[str, tuple[str, float]] = {}  # toolCallId -> (tool name, start time)
 
-    # ---- 写 stdin
+    # ---- writing to stdin
 
     def write(self, record: dict[str, Any]) -> None:
         with self.lock:
@@ -847,15 +847,15 @@ class PiRpc:
         if self.progress:
             progress_line(text)
 
-    # ---- 运行
+    # ---- runs
 
     def start_run(self, message: str) -> None:
-        """在 pi 空闲时发起一次运行。调用方持有 self.lock。"""
+        """Start a run while pi is idle. The caller holds self.lock."""
         self.cancel_close_timer()
         self.finishing = False
         self.end_bg_wait()
         self.active = True
-        # pi 空闲时忽略 streamingBehavior；万一它还在收尾，就排成 follow-up 而不是报错
+        # pi ignores streamingBehavior when idle; if it is still wrapping up, this queues a follow-up instead of failing
         self.run_prompt = self.send({"type": "prompt", "message": message,
                                      "streamingBehavior": "followUp"}, self.on_prompt_response)
 
@@ -865,20 +865,20 @@ class PiRpc:
         disposition = (resp.get("data") or {}).get("disposition")
         if resp.get("success") and disposition != "handled":
             return
-        # 没有启动运行，也就不会有 agent_settled，按已结束处理
+        # no run was started, so no agent_settled will come; treat it as finished
         if not resp.get("success"):
-            self.res.error = f"pi 拒绝了任务: {resp.get('error')}"
+            self.res.error = f"pi rejected the task: {resp.get('error')}"
         self.on_settled()
 
     def on_agent_start(self) -> None:
-        """pi 开始一次运行：可能是我们发的 prompt，也可能是后台任务完成后扩展唤醒的。"""
+        """pi started a run: either our prompt or an extension waking it after a background job finished."""
         with self.lock:
             self.active = True
             if self.waiting_bg:
-                self.note("后台任务的结果已送达，pi 继续运行")
+                self.note("background job result delivered; pi continues")
             self.end_bg_wait()
             if self.finishing:
-                # 收尾途中 pi 又开始干活（例如后台结果刚好到达）：不要关 stdin
+                # pi started working again while we were shutting down (e.g. a background result just arrived): keep stdin open
                 self.finishing = False
                 self.cancel_close_timer()
 
@@ -900,14 +900,14 @@ class PiRpc:
                 self.after_abort = []
                 for item in self.take_inbox():
                     if item["kind"] == "abort":
-                        self.ack(item, delivered=True, note="pi 已经停下，无需中止")
+                        self.ack(item, delivered=True, note="pi has already stopped; nothing to abort")
                         continue
                     texts.append(item["message"])
                     self.res.injected["new_prompt"] += 1
                     self.ack(item, delivered=True, disposition="started",
-                             note="运行已结束，作为新一轮指令发出")
+                             note="run had ended; sent as a new prompt")
                 if texts:
-                    self.note(f"运行结束时有 {len(texts)} 条待发消息，作为新一轮指令发出")
+                    self.note(f"{len(texts)} message(s) pending when the run ended; sent as a new prompt")
                     self.start_run("\n\n".join(texts))
                     return
                 if self.bg_status and not self.abort_requested:
@@ -915,20 +915,20 @@ class PiRpc:
                         self.waiting_bg = True
                         self.wait_since = time.time()
                         self.last_warn = time.time()
-                        self.note(f"pi 已停下，等待后台任务完成后继续：{self.bg_status}")
+                        self.note(f"pi stopped; waiting for background jobs before finishing: {self.bg_status}")
                     return
             else:
-                # 额度或登录失败：--now 的消息放回收件箱，换号后的运行会转发
+                # quota or login failure: put --now messages back in the inbox for the run on the next account
                 for item in self.after_abort:
                     post_inbox(self.session, "follow_up", item["message"])
                 self.after_abort = []
             self.finish()
 
     def finish(self) -> None:
-        """取回 pi 里还没送达的排队消息，然后关 stdin。调用方持有 self.lock。"""
+        """Recover messages still queued in pi, then close stdin. The caller holds self.lock."""
         self.end_bg_wait()
         self.finishing = True
-        # pi 关闭时扩展会取消后台任务并清除状态，所以在这里记下被终止的是哪些
+        # on shutdown the extension cancels background jobs and clears the status, so record now which ones are killed
         self.bg_at_close = self.bg_status
         self.send({"type": "clear_queue"}, self.on_cleared)
         self.cancel_close_timer()
@@ -941,14 +941,14 @@ class PiRpc:
         texts = [str(t) for t in (data.get("steering") or []) + (data.get("followUp") or [])]
         with self.lock:
             if self.active:
-                # clear_queue 回来之前 pi 已经开始新一轮：取回的消息排到它后面
+                # pi started a new run before clear_queue returned: queue the recovered messages behind it
                 for t in texts:
                     self.send({"type": "follow_up", "message": t})
                 return
             if not self.finishing:
                 return
             if texts and not self.failed():
-                self.note(f"pi 里还有 {len(texts)} 条排队消息，作为新一轮指令发出")
+                self.note(f"{len(texts)} message(s) still queued in pi; sent as a new prompt")
                 self.start_run("\n\n".join(texts))
                 return
             for t in texts:
@@ -965,16 +965,16 @@ class PiRpc:
             had = self.bg_status
             self.bg_status = text
             if self.finishing:
-                pass  # pi 正在关闭：状态变化来自扩展取消任务，不是任务完成
+                pass  # pi is shutting down: the status change comes from the extension cancelling jobs, not finishing them
             elif text:
-                self.note(f"后台任务：{text}")
+                self.note(f"background jobs: {text}")
             elif had:
-                self.note("后台任务已全部结束，结果都已送进对话")
+                self.note("all background jobs finished and their results reached the conversation")
             if not text and self.waiting_bg and not self.active and not self.finishing:
-                # 一般后台结果会先唤醒 agent（on_agent_start）；没唤醒就直接收尾
+                # usually a background result wakes the agent first (on_agent_start); if not, finish directly
                 self.finish()
 
-    # ---- 收件箱
+    # ---- inbox
 
     def take_inbox(self) -> list[dict[str, Any]]:
         items = []
@@ -992,7 +992,7 @@ class PiRpc:
                         "note": note, "error": error, "at": int(time.time())})
 
     def forward(self, item: dict[str, Any]) -> None:
-        """运行中转发一条消息。调用方持有 self.lock。"""
+        """Forward one message during a run. The caller holds self.lock."""
         kind, text = item["kind"], item.get("message", "")
         self.res.injected[kind] += 1
         if kind in ("steer", "follow_up"):
@@ -1001,21 +1001,21 @@ class PiRpc:
                 self.ack(item, delivered=ok, disposition=(resp.get("data") or {}).get("disposition"),
                          error=None if ok else str(resp.get("error")))
             self.send({"type": kind, "message": text}, on_resp)
-            self.note(f"转发 {kind}: {' '.join(text.split())[:80]}")
+            self.note(f"forwarded {kind}: {' '.join(text.split())[:80]}")
         elif kind == "interrupt":
             self.after_abort.append(item)
             self.send({"type": "abort"})
             self.ack(item, delivered=True, disposition="aborting",
-                     note="已中止当前操作，停下后作为新指令发出")
-            self.note(f"中止当前操作，之后发出: {' '.join(text.split())[:80]}")
+                     note="current step aborted; will be sent as a new prompt once pi stops")
+            self.note(f"aborting the current step, then sending: {' '.join(text.split())[:80]}")
         else:
             self.abort_requested = True
             self.send({"type": "abort"})
-            self.ack(item, delivered=True, disposition="aborting", note="已发送中止")
-            self.note("收到 abort，中止运行")
+            self.ack(item, delivered=True, disposition="aborting", note="abort sent")
+            self.note("abort received; aborting the run")
 
     def handle_while_waiting(self, items: list[dict[str, Any]]) -> None:
-        """pi 空闲、在等后台任务时收到的消息。调用方持有 self.lock。"""
+        """Messages that arrive while pi is idle and waiting for background jobs. The caller holds self.lock."""
         texts = []
         for item in items:
             if item["kind"] == "abort":
@@ -1023,16 +1023,16 @@ class PiRpc:
                 self.res.stop_reason = "aborted"
                 self.res.injected["abort"] += 1
                 self.ack(item, delivered=True, disposition="aborting",
-                         note="pi 在等后台任务；关闭 pi，后台任务随之终止")
-                self.note("收到 abort：不再等后台任务，关闭 pi")
+                         note="pi was waiting for background jobs; shutting pi down, which cancels them")
+                self.note("abort received: no longer waiting for background jobs; shutting pi down")
                 self.finish()
                 return
             texts.append(item["message"])
             self.res.injected["new_prompt"] += 1
             self.ack(item, delivered=True, disposition="started",
-                     note="pi 在等后台任务，作为新一轮指令发出")
+                     note="pi was waiting for background jobs; sent as a new prompt")
         if texts:
-            self.note(f"等待后台任务期间收到 {len(texts)} 条消息，作为新一轮指令发出")
+            self.note(f"{len(texts)} message(s) arrived while waiting for background jobs; sent as a new prompt")
             self.start_run("\n\n".join(texts))
 
     def pump_inbox(self) -> None:
@@ -1050,7 +1050,7 @@ class PiRpc:
                 for item in self.take_inbox():
                     self.forward(item)
 
-    # ---- 看门狗：长时间没有事件时提示一次，正常运行时不输出
+    # ---- watchdog: one notice after a long quiet period; silent during normal operation
 
     def watch(self) -> None:
         tick = min(WATCH_TICK_S, max(self.stall_warn_s / 4, 0.05))
@@ -1064,15 +1064,15 @@ class PiRpc:
                     continue
                 self.last_warn = now
                 if self.waiting_bg:
-                    self.note(f"仍在等待后台任务（已等 {fmt_dur(now - self.wait_since)}）："
+                    self.note(f"still waiting for background jobs ({fmt_dur(now - self.wait_since)} so far): "
                               f"{self.bg_status}")
                 elif self.tools_running:
                     name, since = min(self.tools_running.values(), key=lambda x: x[1])
-                    self.note(f"{fmt_dur(quiet)} 没有新事件；工具 {name} 已运行 {fmt_dur(now - since)}")
+                    self.note(f"no events for {fmt_dur(quiet)}; tool {name} has been running for {fmt_dur(now - since)}")
                 else:
-                    self.note(f"{fmt_dur(quiet)} 没有新事件")
+                    self.note(f"no events for {fmt_dur(quiet)}")
 
-    # ---- 主循环
+    # ---- main loop
 
     def run(self, message: str, log: Any) -> None:
         assert self.proc.stdout is not None
@@ -1083,7 +1083,7 @@ class PiRpc:
         for th in threads:
             th.start()
         try:
-            # JSONL 只按 LF 切分（pi 文档：U+2028 等不是记录边界）
+            # JSONL is split on LF only (pi docs: U+2028 and friends are not record boundaries)
             for raw in self.proc.stdout:
                 log.write(raw.decode("utf-8", "replace"))
                 log.flush()
@@ -1102,7 +1102,7 @@ class PiRpc:
                 elif t == "extension_ui_request":
                     method = ev.get("method")
                     if method in DIALOG_METHODS:
-                        # 没有人在看：扩展弹出的对话框一律取消，等同于没有界面
+                        # nobody is watching: cancel every extension dialog, as if there were no UI
                         self.write({"type": "extension_ui_response", "id": ev.get("id"),
                                     "cancelled": True})
                     elif method == "setStatus":
@@ -1139,9 +1139,9 @@ def run_pi(cfg: dict[str, Any], account: str, session: str, cwd: str, pi_args: l
            message: str, log_path: str, progress: bool = True) -> RunResult:
     pi = os.environ.get("PI_POOL_PI") or shutil.which("pi")
     if not pi:
-        raise SystemExit("pi-pool: PATH 上找不到 pi")
+        raise SystemExit("pi-pool: pi not found on PATH")
     env = dict(os.environ, PI_CODING_AGENT_DIR=agent_dir(cfg, account))
-    # 子 pi 不继承调用方的会话 ID，它再调 pi-pool 时只留下自己的 PI_SESSION_ID
+    # the child pi does not inherit the caller's session IDs; if it calls pi-pool, only its own PI_SESSION_ID remains
     for var in (*CALLER_VARS.values(), "PI_SESSION_FILE"):
         env.pop(var, None)
     cmd = [pi, "--mode", "rpc", "--session-dir", SESSION_DIR, "--session-id", session, *pi_args]
@@ -1184,9 +1184,9 @@ def run_pi(cfg: dict[str, Any], account: str, session: str, cwd: str, pi_args: l
 
 
 def run_failure(res: RunResult) -> tuple[str, str] | None:
-    """这一轮是不是因为账号本身失败：("quota", 错误) 额度用尽，("auth", 错误) 登录失效。
+    """Did this run fail because of the account itself: ("quota", error) for exhausted quota, ("auth", error) for an expired login.
 
-    这两种换个账号就能继续；其他错误（模型报错、工具出错）照常返回给调用方。
+    Both can continue on another account; other errors (model errors, tool failures) go back to the caller.
     """
     texts: list[str] = []
     if res.stop_reason == "error" and res.error:
@@ -1220,16 +1220,16 @@ def cooldown_until(text: str, rec: dict[str, Any] | None) -> float:
 
 def read_message(prompt: str | None, task_file: str | None) -> str:
     if (prompt is None) == (task_file is None):
-        raise SystemExit("pi-pool run: --prompt 和 --task-file 必须且只能给一个")
+        raise SystemExit("pi-pool run: give exactly one of --prompt and --task-file")
     if task_file is not None:
         try:
             with open(task_file, encoding="utf-8") as f:
                 prompt = f.read()
         except OSError as e:
-            raise SystemExit(f"pi-pool: 读不了任务文件 {task_file}: {e}") from e
+            raise SystemExit(f"pi-pool: cannot read task file {task_file}: {e}") from e
     assert prompt is not None
     if not prompt.strip():
-        raise SystemExit("pi-pool: 任务内容为空")
+        raise SystemExit("pi-pool: the task is empty")
     return prompt
 
 
@@ -1240,7 +1240,7 @@ def cmd_run(cfg: dict[str, Any], args: list[str]) -> int:
         args, pi_args = args[:i], args[i + 1:]
     bad = [a for a in pi_args if a.split("=", 1)[0] in FORBIDDEN_PI_ARGS]
     if bad:
-        raise SystemExit(f"pi-pool: 这些 pi 参数由 pi-pool 管理，不能透传: {' '.join(bad)}")
+        raise SystemExit(f"pi-pool: these pi arguments are managed by pi-pool and cannot be passed through: {' '.join(bad)}")
     message = read_message(take(args, "--prompt"), take(args, "--task-file"))
     account_opt = take(args, "--account", "auto") or "auto"
     size = check_size(take(args, "--size"))
@@ -1249,26 +1249,26 @@ def cmd_run(cfg: dict[str, Any], args: list[str]) -> int:
     max_switch = int(take(args, "--max-switch", "3") or 3)
     refresh = take_flag(args, "--refresh")
     if args:
-        raise SystemExit(f"pi-pool run: 不认识的参数 {' '.join(args)}（pi 参数请放在 -- 之后）")
+        raise SystemExit(f"pi-pool run: unknown arguments {' '.join(args)} (put pi arguments after --)")
     if account_opt != "auto" and account_opt not in cfg["accounts"]:
-        raise SystemExit(f"pi-pool: 没有账号 {account_opt}，可选 {', '.join(cfg['accounts'])}")
+        raise SystemExit(f"pi-pool: no account {account_opt}; choose from {', '.join(cfg['accounts'])}")
     if not active_accounts(cfg):
-        raise SystemExit("pi-pool: 没有启用的账号；用 pi-pool account add 添加")
+        raise SystemExit("pi-pool: no enabled accounts; add one with pi-pool account add")
 
     ensure_dirs()
     state = load_state()
     session = resolve_session(state, sid_opt) if sid_opt else str(uuid.uuid4())
     srec = state["sessions"].get(session)
-    # pi 按工作目录查找会话：续接时必须回到第一次的目录
+    # pi looks up sessions by working directory: a resumed session must return to its first directory
     first_cwd = (srec or {}).get("cwd") or (session_files(session).get(session) if sid_opt else None)
     cwd = os.path.realpath(cwd_opt or first_cwd or os.getcwd())
     if first_cwd and cwd != os.path.realpath(first_cwd):
-        raise SystemExit(f"pi-pool: 会话 {session} 属于目录 {first_cwd}，不能换到 {cwd}")
+        raise SystemExit(f"pi-pool: session {session} belongs to directory {first_cwd}, not {cwd}")
     if not os.path.isdir(cwd):
-        raise SystemExit(f"pi-pool: 工作目录不存在 {cwd}")
+        raise SystemExit(f"pi-pool: working directory does not exist: {cwd}")
     if srec and running_here(srec.get("running")):
-        raise SystemExit(f"pi-pool: 会话 {session} 正在运行（pid {srec['running']['pid']}）；"
-                         "要给它发消息用 pi-pool steer / followup")
+        raise SystemExit(f"pi-pool: session {session} is running (pid {srec['running']['pid']}); "
+                         "use pi-pool steer / followup to message it")
     try:
         return run_loop(cfg, session, cwd, message, pi_args, account_opt, size, srec,
                         state, max_switch, refresh)
@@ -1291,12 +1291,12 @@ def run_loop(cfg: dict[str, Any], session: str, cwd: str, message: str, pi_args:
             account = account_opt
             tier, why = classify(account, quota["accounts"].get(account), state, cfg["low_pct"])
             if tier == "blocked" or (size == "large" and tier == "low"):
-                print(f"[pi-pool] 注意: 指定账号 {account} 分级 {tier}（{why}），仍按指定使用",
+                print(f"[pi-pool] note: requested account {account} is {tier} ({why}); using it anyway",
                       file=sys.stderr)
         else:
             ranked = rank(cfg, quota, load_state(), size, {t["account"] for t in tried}, prefer)
             if not ranked:
-                print(f"[pi-pool] 没有能接 {size} 任务的账号了；运行 pi-pool status 查看",
+                print(f"[pi-pool] no account left that can take a {size} task; see pi-pool status",
                       file=sys.stderr)
                 save_session(session, cwd, message, tried, None, res)
                 return 75
@@ -1325,27 +1325,27 @@ def run_loop(cfg: dict[str, Any], session: str, cwd: str, message: str, pi_args:
             until = cooldown_until(text, quota["accounts"].get(account))
             with locked_state() as st:
                 st["cooldown"][account] = {"until": until, "reason": text[:120]}
-            print(f"[pi-pool] 账号 {account} 被额度拒绝（{text[:160]}），冷却到 {clock(until)}",
+            print(f"[pi-pool] account {account} refused for quota ({text[:160]}); cooling down until {clock(until)}",
                   file=sys.stderr, flush=True)
         else:
             until = time.time() + cfg.get("auth_cooldown_s", DEFAULT_AUTH_COOLDOWN)
             with locked_state() as st:
                 st["auth_bad"][account] = {"until": until, "reason": text[:120], "at": int(time.time())}
-            print(f"[pi-pool] 账号 {account} 登录失效（{text[:160]}），先不用它；"
-                  f"重新登录：pi-pool account login {account}", file=sys.stderr, flush=True)
+            print(f"[pi-pool] account {account} login expired ({text[:160]}); skipping it. "
+                  f"Log in again: pi-pool account login {account}", file=sys.stderr, flush=True)
         invalidate_quota()
         if len(tried) > max_switch:
-            print(f"[pi-pool] 已切换 {max_switch} 次，停止", file=sys.stderr)
+            print(f"[pi-pool] switched accounts {max_switch} times; stopping", file=sys.stderr)
             save_session(session, cwd, message, tried, account, res)
             return 75
         quota = get_quota(cfg)
         old = account
         nxt = rank(cfg, quota, load_state(), size, {t["account"] for t in tried}, None)
         new = nxt[0][0] if nxt else "?"
-        # 这一轮的任务已进入会话就只发续接提示，否则重发原任务
+        # if this turn's task already reached the session, send only a continuation prompt; otherwise resend the task
         if res.saw_user:
             current_message = CONTINUE_PROMPT.format(
-                old=old, new=new, why="额度限制" if kind == "quota" else "登录失效")
+                old=old, new=new, why="a quota limit" if kind == "quota" else "an expired login")
             if res.bg_left:
                 current_message += BG_LOST_NOTE.format(status=res.bg_left)
         else:
@@ -1360,7 +1360,7 @@ def run_loop(cfg: dict[str, Any], session: str, cwd: str, message: str, pi_args:
 
 
 def caller_session() -> dict[str, str] | None:
-    """调用方的会话 ID，按客户端分开记；一个都没有时为 None。"""
+    """The caller's session IDs, per client; None if there are none."""
     found = {client: os.environ[var] for client, var in CALLER_VARS.items()
              if os.environ.get(var)}
     return found or None
@@ -1372,7 +1372,7 @@ def new_record(cwd: str, message: str) -> dict[str, Any]:
 
 
 def mark_running(session: str, cwd: str, message: str, account: str, log_path: str) -> None:
-    """开跑前就登记会话和运行中的进程，被 kill 时 --session 也能找回、steer 能找到它。"""
+    """Record the session and the running process before starting, so --session and steer find it even if killed."""
     with locked_state() as st:
         rec = st["sessions"].setdefault(session, new_record(cwd, message))
         rec["running"] = {"pid": os.getpid(), "host": socket.gethostname(), "account": account,
@@ -1389,7 +1389,7 @@ def clear_running(session: str) -> None:
 
 
 def running_here(run: dict[str, Any] | None) -> bool:
-    """登记的进程是否还活着。别的节点上的进程查不了，按活着算。"""
+    """Is the recorded process still alive? A process on another host cannot be checked and counts as alive."""
     if not run:
         return False
     if run.get("host") != socket.gethostname():
@@ -1418,39 +1418,39 @@ def save_session(session: str, cwd: str, message: str, tried: list[dict[str, Any
 
 
 def print_summary(session: str, tried: list[dict[str, Any]], res: RunResult) -> None:
-    path = " → ".join(t["account"] + ("(额度)" if t.get("quota_error") else "")
-                      + ("(登录失效)" if t.get("auth_error") else "") for t in tried)
-    tools = ",".join(f"{k}×{v}" for k, v in res.tools.most_common()) or "无"
+    path = " → ".join(t["account"] + ("(quota)" if t.get("quota_error") else "")
+                      + ("(login)" if t.get("auth_error") else "") for t in tried)
+    tools = ",".join(f"{k}×{v}" for k, v in res.tools.most_common()) or "none"
     u = res.usage
-    print(f"[pi-pool] session={session} 账号 {path} exit={res.returncode} "
-          f"stop={res.stop_reason} 轮数={res.turns} 用时={sum(t['elapsed_s'] for t in tried)}s")
+    print(f"[pi-pool] session={session} accounts {path} exit={res.returncode} "
+          f"stop={res.stop_reason} turns={res.turns} time={sum(t['elapsed_s'] for t in tried)}s")
     print(f"[pi-pool] tokens in={u['input']} out={u['output']} cacheRead={u['cacheRead']} "
-          f"工具 {tools}" + (f"（{res.tool_errors} 次出错）" if res.tool_errors else ""))
+          f"tools {tools}" + (f" ({res.tool_errors} failed)" if res.tool_errors else ""))
     if res.injected:
-        print("[pi-pool] 运行中插话 " + ",".join(f"{k}×{v}" for k, v in res.injected.items()))
+        print("[pi-pool] injected " + ",".join(f"{k}×{v}" for k, v in res.injected.items()))
     if res.bg_waited_s >= 1:
-        print(f"[pi-pool] pi 停下后等后台任务 {fmt_dur(res.bg_waited_s)}")
+        print(f"[pi-pool] waited {fmt_dur(res.bg_waited_s)} for background jobs after pi stopped")
     if res.bg_left:
-        print(f"[pi-pool] 注意：pi 退出时仍有后台任务，已随进程终止：{res.bg_left}")
+        print(f"[pi-pool] warning: background jobs were still pending when pi exited and were killed: {res.bg_left}")
     print(f"[pi-pool] log={tried[-1]['log'] if tried else '-'}")
     if res.error:
-        print(f"[pi-pool] 错误: {res.error}")
+        print(f"[pi-pool] error: {res.error}")
     if res.returncode not in (0, None) and res.stderr_tail:
-        print("[pi-pool] stderr 末尾:\n" + "\n".join(res.stderr_tail[-10:]))
+        print("[pi-pool] stderr tail:\n" + "\n".join(res.stderr_tail[-10:]))
     print("---")
-    print(res.final_text or "（没有文本回答）")
+    print(res.final_text or "(no text answer)")
 
 
-# --------------------------------------------------------------- 查看
+# --------------------------------------------------------------- viewing
 
 def cmd_show(cfg: dict[str, Any], args: list[str]) -> int:
     if not args:
-        raise SystemExit("pi-pool show: 需要会话 ID")
+        raise SystemExit("pi-pool show: a session ID is required")
     state = load_state()
     sid = resolve_session(state, args[0])
     rec = state["sessions"].get(sid)
     if not rec:
-        print(f"pi-pool: 没有会话 {sid}", file=sys.stderr)
+        print(f"pi-pool: no session {sid}", file=sys.stderr)
         return 1
     res = RunResult()
     log = rec.get("last_log")
@@ -1461,13 +1461,13 @@ def cmd_show(cfg: dict[str, Any], args: list[str]) -> int:
                     ev = json.loads(line)
                     if isinstance(ev, dict):
                         absorb(res, ev, progress=False)
-    print(f"会话 {sid}  目录 {rec['cwd']}  任务: {rec.get('task', '')}")
+    print(f"session {sid}  dir {rec['cwd']}  task: {rec.get('task', '')}")
     for r in rec.get("runs", []):
         print(f"  {clock(r['started'])} {r['account']:<5} {r['elapsed_s']:>5}s stop={r['stop']}"
-              + (f"  额度: {r['quota_error'][:80]}" if r.get("quota_error") else "")
-              + (f"  登录失效: {r['auth_error'][:80]}" if r.get("auth_error") else ""))
+              + (f"  quota: {r['quota_error'][:80]}" if r.get("quota_error") else "")
+              + (f"  login expired: {r['auth_error'][:80]}" if r.get("auth_error") else ""))
     print("---")
-    print(res.final_text or "（最后一次运行没有文本回答）")
+    print(res.final_text or "(the last run gave no text answer)")
     return 0
 
 
@@ -1477,19 +1477,19 @@ def cmd_ls(cfg: dict[str, Any], args: list[str]) -> int:
                       key=lambda kv: kv[1].get("updated", 0), reverse=True)[:n]
     for sid, rec in sessions:
         accounts = ">".join(dict.fromkeys(r["account"] for r in rec.get("runs", [])))
-        stop = ("运行中(" + rec["running"]["account"] + ")" if running_here(rec.get("running"))
+        stop = ("running(" + rec["running"]["account"] + ")" if running_here(rec.get("running"))
                 else f"stop={rec.get('last_stop')}")
         print(f"{sid}  {clock(rec.get('updated'))}  {accounts:<12} "
               f"{stop}  {rec.get('task', '')[:60]}")
     return 0
 
 
-# --------------------------------------------------------------- 账号管理
+# --------------------------------------------------------------- account management
 
 def find_pi() -> str:
     pi = os.environ.get("PI_POOL_PI") or shutil.which("pi")
     if not pi:
-        raise SystemExit("pi-pool: PATH 上找不到 pi（npm install -g @earendil-works/pi-coding-agent）")
+        raise SystemExit("pi-pool: pi not found on PATH (npm install -g @earendil-works/pi-coding-agent)")
     return pi
 
 
@@ -1498,10 +1498,10 @@ def base_dir(cfg: dict[str, Any]) -> str:
 
 
 def link_shared(base: str, target: str) -> list[str]:
-    """把 base 里除凭证外的每一项软链进 target（和旧的 ~/.pi/pi-link.sh 一样）。
+    """Symlink every entry of base except credentials into target.
 
-    已经是软链的不动；同名的真实文件先改名成 .bak；指向 base 里已删除文件的失效软链
-    清掉。返回做了哪些改动。
+    Existing links are left alone; a real file with the same name is first renamed to .bak; dangling links
+    that point to files deleted from base are removed. Return the changes made.
     """
     if os.path.realpath(target) == os.path.realpath(base):
         return []
@@ -1512,7 +1512,7 @@ def link_shared(base: str, target: str) -> list[str]:
         dst = os.path.join(target, name)
         if os.path.dirname(os.path.abspath(os.path.join(target, os.readlink(dst)))) in (base, base_real):
             os.unlink(dst)
-            done.append(f"{name}: 失效软链已删除（base 里已没有这个文件）")
+            done.append(f"{name}: dangling link removed (no longer in base)")
     for name in sorted(os.listdir(base)):
         if name in UNSHARED or name.endswith(".bak") or ".bak-" in name:
             continue
@@ -1524,9 +1524,9 @@ def link_shared(base: str, target: str) -> list[str]:
             if os.path.exists(bak) or os.path.islink(bak):
                 bak = f"{dst}.bak-{time.strftime('%Y%m%d%H%M%S')}"
             os.rename(dst, bak)
-            done.append(f"{name}: 原文件改名为 {os.path.basename(bak)}")
+            done.append(f"{name}: existing file renamed to {os.path.basename(bak)}")
         os.symlink(os.path.join(base, name), dst)
-        done.append(f"{name}: 已软链")
+        done.append(f"{name}: linked")
     return done
 
 
@@ -1540,7 +1540,7 @@ def broken_links(d: str) -> list[str]:
 
 
 def auth_check(cfg: dict[str, Any], d: str) -> str:
-    """pi auth check：ready / not_ready / invalid，或出错原因。不刷新凭证。"""
+    """pi auth check: ready / not_ready / invalid, or why it failed. Credentials are not refreshed."""
     env = dict(os.environ, PI_CODING_AGENT_DIR=d)
     try:
         p = subprocess.run([find_pi(), "auth", "check", "--provider", cfg["provider"], "--json",
@@ -1556,14 +1556,14 @@ def auth_check(cfg: dict[str, Any], d: str) -> str:
 
 
 def pi_login(cfg: dict[str, Any], d: str) -> bool:
-    """交互登录（device code，不开浏览器）；需要用户在终端里操作。"""
-    print(f"pi-pool: 登录 {cfg['provider']} 到 {d}（按提示在浏览器里打开链接并输入代码）",
+    """Interactive login (device code, no browser launch); the user has to act in the terminal."""
+    print(f"pi-pool: logging in to {cfg['provider']} in {d} (open the link in a browser and enter the code)",
           file=sys.stderr, flush=True)
     env = dict(os.environ, PI_CODING_AGENT_DIR=d)
     p = subprocess.run([find_pi(), "auth", "login", cfg["provider"], "--no-browser"], env=env,
                        check=False)
     status = auth_check(cfg, d)
-    print(f"pi-pool: 登录结果 exit={p.returncode}，auth check: {status}", file=sys.stderr)
+    print(f"pi-pool: login exit={p.returncode}, auth check: {status}", file=sys.stderr)
     return status == "ready"
 
 
@@ -1577,7 +1577,7 @@ def clear_account_state(name: str) -> None:
 def account_names(cfg: dict[str, Any], names: list[str]) -> list[str]:
     for n in names:
         if n not in cfg["accounts"]:
-            raise SystemExit(f"pi-pool: 没有账号 {n}，可选 {', '.join(cfg['accounts'])}")
+            raise SystemExit(f"pi-pool: no account {n}; choose from {', '.join(cfg['accounts'])}")
     return names or list(cfg["accounts"])
 
 
@@ -1588,18 +1588,18 @@ def take_int(args: list[str], name: str) -> int | None:
     try:
         return int(v)
     except ValueError:
-        raise SystemExit(f"pi-pool: {name} 需要整数") from None
+        raise SystemExit(f"pi-pool: {name} needs an integer") from None
 
 
 def cmd_account(cfg: dict[str, Any], args: list[str]) -> int:
     sub = args.pop(0) if args else "list"
     if sub == "list":
-        print(f"配置 {CONFIG_PATH}" + ("" if cfg["from_file"] else "（不存在，下面是默认值）")
-              + f"；共享设置来自 {cfg['base_dir']}")
-        print(f"{'account':<10}{'prio':>5} {'enabled':<8}{'auth.json':<10}{'坏链':>4}  dir")
+        print(f"config {CONFIG_PATH}" + ("" if cfg["from_file"] else " (missing; showing defaults)")
+              + f"; shared settings from {cfg['base_dir']}")
+        print(f"{'account':<10}{'prio':>5} {'enabled':<8}{'auth.json':<10}{'broken':>7}  dir")
         for n, a in sorted(cfg["accounts"].items(), key=lambda kv: (kv[1]["priority"], kv[0])):
             d = os.path.expanduser(a["dir"])
-            has_auth = "有" if os.path.isfile(os.path.join(d, "auth.json")) else "无"
+            has_auth = "yes" if os.path.isfile(os.path.join(d, "auth.json")) else "no"
             print(f"{n:<10}{a['priority']:>5} {'yes' if a['enabled'] else 'no':<8}{has_auth:<10}"
                   f"{len(broken_links(d)):>4}  {a['dir']}")
         return 0
@@ -1608,38 +1608,38 @@ def cmd_account(cfg: dict[str, Any], args: list[str]) -> int:
         d_opt = take(args, "--dir")
         prio = take_int(args, "--priority")
         if len(args) != 1:
-            raise SystemExit("用法: pi-pool account add NAME [--dir DIR] [--priority N] [--no-login]")
+            raise SystemExit("usage: pi-pool account add NAME [--dir DIR] [--priority N] [--no-login]")
         name = args[0]
         if name in cfg["accounts"]:
-            raise SystemExit(f"pi-pool: 账号 {name} 已存在；重新登录用 pi-pool account login {name}")
+            raise SystemExit(f"pi-pool: account {name} already exists; to log in again use pi-pool account login {name}")
         d_raw = d_opt or f"~/.pi/agent-{name}"
         d = os.path.realpath(os.path.expanduser(d_raw))
         base = base_dir(cfg)
         if d != base:
             if not os.path.isdir(base):
                 os.makedirs(base, exist_ok=True)
-                print(f"pi-pool: 共享设置目录 {base} 不存在，已新建；在里面配好 pi 后运行 "
+                print(f"pi-pool: shared settings directory {base} did not exist and was created; configure pi there, then run "
                       "pi-pool account sync", file=sys.stderr)
             for line in link_shared(base, d):
                 print(f"  {line}")
         else:
             os.makedirs(d, exist_ok=True)
         if not no_login and not pi_login(cfg, d):
-            print(f"pi-pool: 登录没有完成，账号没有加入配置。目录 {d} 保留；"
-                  f"重试：pi-pool account add {name} --dir {d_raw}", file=sys.stderr)
+            print(f"pi-pool: login did not complete; the account was not added. Directory {d} is kept. "
+                  f"Retry: pi-pool account add {name} --dir {d_raw}", file=sys.stderr)
             return 1
         tmp = normalize_config({"accounts": {name: {"dir": d_raw, "priority": prio
                                                      if prio is not None else DEFAULT_PRIORITY}}})
         cfg["accounts"][name] = tmp["accounts"][name]
         save_config(cfg)
         clear_account_state(name)
-        print(f"pi-pool: 已添加账号 {name}（priority {cfg['accounts'][name]['priority']}，{d_raw}），"
-              f"配置写入 {CONFIG_PATH}")
+        print(f"pi-pool: added account {name} (priority {cfg['accounts'][name]['priority']}, {d_raw}); "
+              f"config written to {CONFIG_PATH}")
         return 0
     if sub == "login":
         names = account_names(cfg, args)
         if len(names) != 1:
-            raise SystemExit("用法: pi-pool account login NAME")
+            raise SystemExit("usage: pi-pool account login NAME")
         ok = pi_login(cfg, agent_dir(cfg, names[0]))
         if ok:
             clear_account_state(names[0])
@@ -1652,7 +1652,7 @@ def cmd_account(cfg: dict[str, Any], args: list[str]) -> int:
         d_opt = take(args, "--dir")
         if len(args) != 1 or (enable and disable) or (prio is None and not enable and not disable
                                                        and d_opt is None):
-            raise SystemExit("用法: pi-pool account set NAME [--priority N] [--enable|--disable] [--dir DIR]")
+            raise SystemExit("usage: pi-pool account set NAME [--priority N] [--enable|--disable] [--dir DIR]")
         name = account_names(cfg, args)[0]
         acc = cfg["accounts"][name]
         if prio is not None:
@@ -1662,25 +1662,25 @@ def cmd_account(cfg: dict[str, Any], args: list[str]) -> int:
         if d_opt is not None:
             acc["dir"] = d_opt
         save_config(cfg)
-        print(f"pi-pool: {name} → priority {acc['priority']}，{'启用' if acc['enabled'] else '停用'}，"
+        print(f"pi-pool: {name} → priority {acc['priority']}, {'enabled' if acc['enabled'] else 'disabled'}, "
               f"{acc['dir']}")
         return 0
     if sub == "remove":
         if len(args) != 1:
-            raise SystemExit("用法: pi-pool account remove NAME")
+            raise SystemExit("usage: pi-pool account remove NAME")
         name = account_names(cfg, args)[0]
         d = cfg["accounts"].pop(name)["dir"]
         save_config(cfg)
         clear_account_state(name)
-        print(f"pi-pool: 已从配置移除 {name}；目录 {d}（含凭证）没有删除")
+        print(f"pi-pool: removed {name} from the config; directory {d} (with credentials) was not deleted")
         return 0
     if sub == "sync":
         base = base_dir(cfg)
         if not os.path.isdir(base):
-            raise SystemExit(f"pi-pool: 共享设置目录 {base} 不存在")
+            raise SystemExit(f"pi-pool: shared settings directory {base} does not exist")
         for n in account_names(cfg, args):
             changes = link_shared(base, agent_dir(cfg, n))
-            print(f"{n}: " + ("无需改动" if not changes else "；".join(changes)))
+            print(f"{n}: " + ("no changes" if not changes else "; ".join(changes)))
         return 0
     if sub == "check":
         bad = 0
@@ -1689,13 +1689,13 @@ def cmd_account(cfg: dict[str, Any], args: list[str]) -> int:
             bad += status != "ready"
             print(f"{n:<10}{status}")
         return 1 if bad else 0
-    raise SystemExit(f"pi-pool account: 未知子命令 {sub}（list/add/login/set/remove/sync/check）")
+    raise SystemExit(f"pi-pool account: unknown subcommand {sub} (list/add/login/set/remove/sync/check)")
 
 
 def cmd_config(cfg: dict[str, Any], args: list[str]) -> int:
     if take_flag(args, "--write"):
         save_config(cfg)
-        print(f"pi-pool: 已写入 {CONFIG_PATH}")
+        print(f"pi-pool: wrote {CONFIG_PATH}")
         return 0
     print(json.dumps(config_for_file(cfg), ensure_ascii=False, indent=1))
     return 0
@@ -1707,7 +1707,7 @@ def skill_link() -> str:
 
 
 def cmd_doctor(cfg: dict[str, Any], args: list[str]) -> int:
-    """检查这台机器能不能跑 pi-pool；有 FAIL 时退出码 1。"""
+    """Check whether this machine can run pi-pool; exit code 1 if anything FAILs."""
     fails = 0
 
     def line(level: str, text: str) -> None:
@@ -1723,21 +1723,21 @@ def cmd_doctor(cfg: dict[str, Any], args: list[str]) -> int:
             v = subprocess.run([pi, "--version"], capture_output=True, text=True, timeout=30,
                                check=False).stdout.strip()
         except (OSError, subprocess.TimeoutExpired) as e:
-            v = f"无法运行: {e}"
-        line("ok", f"pi {v}（{pi}）")
+            v = f"cannot run: {e}"
+        line("ok", f"pi {v} ({pi})")
     else:
-        line("FAIL", "PATH 上没有 pi：npm install -g @earendil-works/pi-coding-agent")
+        line("FAIL", "pi is not on PATH: npm install -g @earendil-works/pi-coding-agent")
     which = shutil.which("pi-pool")
     if which and os.path.realpath(which) == os.path.realpath(__file__):
-        line("ok", f"命令 pi-pool → {os.path.realpath(which)}")
+        line("ok", f"command pi-pool -> {os.path.realpath(which)}")
     else:
-        line("warn", f"命令 pi-pool {'指向 ' + os.path.realpath(which) if which else '不在 PATH 上'}；"
-             f"运行 {os.path.join(here, 'install.sh')}")
+        line("warn", f"command pi-pool {'points to ' + os.path.realpath(which) if which else 'is not on PATH'}; "
+             f"run {os.path.join(here, 'install.sh')}")
     sk = skill_link()
     if os.path.realpath(sk) == here:
         line("ok", f"Claude skill {sk} → {here}")
     else:
-        line("warn", f"Claude skill {sk} 没有指向 {here}；运行 install.sh")
+        line("warn", f"Claude skill {sk} does not point to {here}; run install.sh")
     base = base_dir(cfg)
     settings = os.path.join(base, "settings.json")
     try:
@@ -1746,65 +1746,65 @@ def cmd_doctor(cfg: dict[str, Any], args: list[str]) -> int:
     except OSError:
         has_bg = False
     line("ok" if has_bg else "warn",
-         "pi-async-bash 已在共享设置里" if has_bg else
-         f"{settings} 里没有 pi-async-bash：长命令只能前台跑（pi install npm:@chthub/pi-async-bash）")
+         "pi-async-bash is in the shared settings" if has_bg else
+         f"pi-async-bash is not in {settings}: long commands can only run in the foreground (pi install npm:@chthub/pi-async-bash)")
     line("ok" if cfg["from_file"] else "warn",
-         f"配置 {CONFIG_PATH}" + ("" if cfg["from_file"] else " 不存在，用的是默认目录；"
-                                 "pi-pool config --write 生成"))
+         f"config {CONFIG_PATH}" + ("" if cfg["from_file"] else " is missing; using the default directory. "
+                                 "Create it with pi-pool config --write"))
     enabled = active_accounts(cfg)
     if not enabled:
-        line("FAIL", "没有启用的账号：pi-pool account add NAME")
+        line("FAIL", "no enabled accounts: pi-pool account add NAME")
     for n, a in sorted(cfg["accounts"].items(), key=lambda kv: (kv[1]["priority"], kv[0])):
         d = os.path.expanduser(a["dir"])
-        tag = f"账号 {n}（priority {a['priority']}{'' if a['enabled'] else '，已停用'}）"
+        tag = f"account {n} (priority {a['priority']}{'' if a['enabled'] else ', disabled'})"
         if not os.path.isdir(d):
-            line("FAIL" if a["enabled"] else "warn", f"{tag}: 目录 {d} 不存在")
+            line("FAIL" if a["enabled"] else "warn", f"{tag}: directory {d} does not exist")
             continue
         broken = broken_links(d)
-        status = auth_check(cfg, d) if pi else "未检查"
+        status = auth_check(cfg, d) if pi else "not checked"
         level = "ok" if status == "ready" else ("FAIL" if a["enabled"] else "warn")
         if level == "ok" and broken:
             level = "warn"
         line(level, f"{tag}: auth {status}"
-             + (f"，失效软链 {', '.join(broken)}（pi-pool account sync {n} 清理）" if broken else "")
-             + ("" if status == "ready" else f"；重新登录：pi-pool account login {n}"))
+             + (f", dangling links {', '.join(broken)} (clean up with pi-pool account sync {n})" if broken else "")
+             + ("" if status == "ready" else f"; log in again: pi-pool account login {n}"))
     try:
         ensure_dirs()
         probe = os.path.join(POOL_DIR, ".doctor")
         with open(probe, "w", encoding="utf-8") as f:
             f.write("ok")
         os.unlink(probe)
-        line("ok", f"运行数据目录 {POOL_DIR} 可写")
+        line("ok", f"runtime data directory {POOL_DIR} is writable")
     except OSError as e:
-        line("FAIL", f"运行数据目录 {POOL_DIR} 不可写: {e}")
+        line("FAIL", f"runtime data directory {POOL_DIR} is not writable: {e}")
     return 1 if fails else 0
 
 
-# --------------------------------------------------------------- 插话
+# --------------------------------------------------------------- messages to running sessions
 
 def cmd_send(cfg: dict[str, Any], args: list[str], kind: str) -> int:
-    """steer / followup / abort：写进收件箱，等正在运行的 pi-pool 确认送达。"""
+    """steer / followup / abort: write to the inbox and wait for the running pi-pool to acknowledge."""
     now = take_flag(args, "--now")
     task_file = take(args, "--file")
     wait = float(take(args, "--wait", str(ACK_WAIT_S)) or ACK_WAIT_S)
     if not args:
-        raise SystemExit(f"pi-pool {kind}: 需要会话 ID")
+        raise SystemExit(f"pi-pool {kind}: a session ID is required")
     sid_arg = args.pop(0)
     if kind == "abort":
         if args or task_file or now:
-            raise SystemExit("pi-pool abort: 只接受会话 ID")
+            raise SystemExit("pi-pool abort: takes only a session ID")
         message = ""
     else:
         message = read_message(" ".join(args) if args else None, task_file)
     if now:
         if kind != "steer":
-            raise SystemExit("pi-pool: --now 只能用于 steer")
+            raise SystemExit("pi-pool: --now only works with steer")
         kind = "interrupt"
     state = load_state()
     sid = resolve_session(state, sid_arg)
     rec = state["sessions"].get(sid) or {}
     if not running_here(rec.get("running")):
-        print(f"pi-pool: 会话 {sid} 没有在运行；续接用 "
+        print(f"pi-pool: session {sid} is not running; to continue it use "
               f"pi-pool run --session {sid[:8]} --prompt ...", file=sys.stderr)
         return 1
     name = post_inbox(sid, kind, message)
@@ -1817,9 +1817,9 @@ def cmd_send(cfg: dict[str, Any], args: list[str], kind: str) -> int:
         with contextlib.suppress(FileNotFoundError):
             os.unlink(ack)
         ok = bool(data.get("delivered"))
-        detail = "，".join(str(x) for x in (data.get("disposition"), data.get("note"),
+        detail = ", ".join(str(x) for x in (data.get("disposition"), data.get("note"),
                                             data.get("error")) if x)
-        print(f"pi-pool: {kind} {'已送达' if ok else '没送达'}（{detail}）")
+        print(f"pi-pool: {kind} {'delivered' if ok else 'not delivered'} ({detail})")
         return 0 if ok else 1
 
     deadline = time.time() + wait
@@ -1837,11 +1837,11 @@ def cmd_send(cfg: dict[str, Any], args: list[str], kind: str) -> int:
     try:
         os.unlink(pending)
     except FileNotFoundError:
-        print(f"pi-pool: {kind} 已被取走，但 {wait:.0f}s 内没收到确认；"
-              "看运行的 stderr 或日志", file=sys.stderr)
+        print(f"pi-pool: {kind} was picked up, but no acknowledgement arrived within {wait:.0f}s; "
+              "check the run's stderr or log", file=sys.stderr)
         return 1
-    print(f"pi-pool: {wait:.0f}s 内没人取走，已撤回；会话可能已结束或运行它的 pi-pool 卡住了",
-          file=sys.stderr)
+    print(f"pi-pool: nobody picked the message up within {wait:.0f}s; withdrawn. The session may have ended "
+          "or the pi-pool running it is stuck", file=sys.stderr)
     return 1
 
 
@@ -1857,9 +1857,9 @@ def main(argv: list[str]) -> int:
         "followup": lambda c, a: cmd_send(c, a, "follow_up"),
         "abort": lambda c, a: cmd_send(c, a, "abort")}
     if cmd not in commands:
-        print(f"pi-pool: 未知命令 {cmd}；pi-pool --help 查看用法", file=sys.stderr)
+        print(f"pi-pool: unknown command {cmd}; see pi-pool --help", file=sys.stderr)
         return 2
-    # 被 kill 时也要把 pi 子进程一起收掉
+    # when killed, take the child pi process down too
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     try:
         return commands[cmd](load_config(), args)

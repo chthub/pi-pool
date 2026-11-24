@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
-"""测试用的假 pi（`--mode rpc`）：按 PI_CODING_AGENT_DIR 决定成功还是报额度错误，不联网。
+"""Fake pi for tests (`--mode rpc`): succeeds or reports a quota error depending on PI_CODING_AGENT_DIR; no network.
 
-从 stdin 读 RPC 命令（prompt/steer/follow_up/abort/clear_queue/extension_ui_response），
-往 stdout 写回应和事件；stdin 关闭后退出。
+Reads RPC commands from stdin (prompt/steer/follow_up/abort/clear_queue/extension_ui_response),
+writes responses and events to stdout, and exits when stdin closes.
 
-FAKE_PI_FAIL：逗号分隔的 agent 目录名，这些账号返回 usage limit 错误。
-FAKE_PI_CALLS：启动时追加一行 {"account","argv","cwd"}，之后每条命令追加 {"account","cmd"}。
-FAKE_PI_DELAY：每次工具调用耗时（秒），期间可以被 abort 打断；默认 0。
-FAKE_PI_DIALOG：设了就在每次运行开始时弹一个 confirm 对话框，等客户端回应。
-FAKE_PI_AUTH_FAIL：逗号分隔的 agent 目录名，这些账号返回登录失效错误。
-FAKE_PI_BG：秒数。第一次运行开始时像 pi-async-bash 一样报告一个后台任务（setStatus
-  async-bash），这么多秒后任务完成：唤醒 agent（agent_start、async_bash_result、回答）
-  并清除状态。进程退出时任务还没完成就记一行 {"bg": "killed"}。
-FAKE_PI_PENDING_ON_CLEAR：第一次 clear_queue 时返回这条排队的 follow-up 消息。
+FAKE_PI_FAIL: comma-separated agent directory names whose accounts return a usage-limit error.
+FAKE_PI_CALLS: appends {"account","argv","cwd"} at start, then {"account","cmd"} for every command.
+FAKE_PI_DELAY: seconds each tool call takes; abort can interrupt it. Default 0.
+FAKE_PI_DIALOG: if set, opens a confirm dialog at the start of each run and waits for the client.
+FAKE_PI_AUTH_FAIL: comma-separated agent directory names whose accounts return an expired-login error.
+FAKE_PI_BG: seconds. Like pi-async-bash, the first run reports one background job (setStatus
+  async-bash); after this many seconds the job finishes: the agent is woken (agent_start, async_bash_result,
+  an answer) and the status is cleared. If the job is still pending at exit, {"bg": "killed"} is logged.
+FAKE_PI_PENDING_ON_CLEAR: the first clear_queue returns this queued follow-up message.
 
-也支持 `auth login/check` 和 `--version`，给账号管理命令测试用：login 在
-PI_CODING_AGENT_DIR 里写 auth.json（FAKE_PI_LOGIN_FAIL 设了就失败），check 看它在不在。
+Also supports `auth login/check` and `--version` for the account-management tests: login writes auth.json
+into PI_CODING_AGENT_DIR (fails if FAKE_PI_LOGIN_FAIL is set); check reports whether it exists.
 """
 
 import json
@@ -100,7 +100,7 @@ def assistant(stop, content, **extra):
 def settle(aborted=False):
     global busy
     emit({"type": "agent_end", "messages": [], "willRetry": False})
-    # 和真 pi 一样：发出 agent_settled 时已经空闲，紧接着的 prompt 会开新一轮
+    # like real pi: idle by the time agent_settled is emitted, so an immediate prompt starts a new run
     with lock:
         busy = False
         idle.set()
@@ -162,7 +162,7 @@ def run(message):
 
 
 def wake():
-    """后台任务完成：像 pi-async-bash 的 triggerTurn 一样唤醒 agent。"""
+    """The background job finished: wake the agent the way pi-async-bash's triggerTurn does."""
     global busy
     with lock:
         busy = True
@@ -232,7 +232,7 @@ while True:
         continue
     run(msg)
 if bg["started"] and not bg["done"]:
-    # 和 pi-async-bash 一样：关闭时取消任务，状态先变成「待送达」，再清除
+    # like pi-async-bash: on shutdown jobs are cancelled; the status turns into "pending delivery", then clears
     emit({"type": "extension_ui_request", "id": "st-3", "method": "setStatus",
           "statusKey": "async-bash", "statusText": "Background bash · 1 result pending delivery"})
     emit({"type": "extension_ui_request", "id": "st-4", "method": "setStatus",
